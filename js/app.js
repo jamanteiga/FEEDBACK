@@ -392,7 +392,7 @@ $('#file').onchange = e => { importFiles([...e.target.files], 'seleccionar'); e.
 drop.addEventListener('drop', e => {
   const files = [...e.dataTransfer.files];
   if (files.length) importFiles(files, 'arrastrar');
-  else addMsg('error', 'El origen arrastrado no entregó ningún archivo. Correos: arrastra desde Outlook de escritorio (clásico) o guarda el correo como .msg/.eml/PDF y arrástralo. Imágenes de Teams: prueba Ctrl+V o descárgalas.');
+  else addMsg('error', `El origen arrastrado no entregó ningún archivo (tipos recibidos: ${esc([...(e.dataTransfer.types || [])].join(', ') || 'ninguno')}). Pasa con correos arrastrados directamente desde Outlook al navegador. Arrástralos primero a una carpeta del Explorador de Windows (se crean archivos .msg) y desde ahí a esta zona, o añade esa carpeta con «Añadir carpeta…». Imágenes de Teams: prueba Ctrl+V o descárgalas.`);
 });
 document.addEventListener('paste', e => {
   const files = [...(e.clipboardData?.files || [])]; if (!files.length) return; e.preventDefault();

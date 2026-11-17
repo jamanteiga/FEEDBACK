@@ -18,7 +18,7 @@
     <button id="cancel" class="sec" hidden>Cancelar</button>
     <span class="m">Carpetas (solo lectura, nunca se modifican):</span> <span id="folders"></span>
   </div>
-  <p class="m" style="margin:8px 0 0">Una carpeta puede mezclar PDF, imágenes y correos (<b>.msg</b> / <b>.eml</b>), o puedes añadir una carpeta de documentos y otra de correos. Se recorren las subcarpetas.</p>
+  <p class="m" style="margin:8px 0 0">Una carpeta puede mezclar PDF, imágenes y correos (<b>.msg</b> / <b>.eml</b>), o puedes añadir una carpeta de documentos y otra de correos. Se recorren las subcarpetas. <b>Correos de Outlook:</b> arrástralos desde Outlook a esa carpeta en el Explorador de Windows (o usa la macro <code>outlook_guardar_correos.bas</code>) y pulsa «Buscar nuevos o modificados».</p>
   <div id="nofs" class="msg error" hidden>Este navegador no permite elegir carpetas. Usa Edge o Chrome, o incorpora archivos con la zona de abajo.</div>
   <div id="status" class="msg info" hidden></div>
 </section>
@@ -26,8 +26,8 @@
 <section class="card">
   <h2>2 · Incorporar archivos sueltos</h2>
   <div id="drop" tabindex="0">
-    <b>Arrastra aquí PDF, imágenes o correos de Outlook</b> · pega una imagen con <b>Ctrl+V</b> · o haz clic para seleccionar
-    <small>PDF, JPG, PNG, TIFF, correos .msg/.eml (se indexan también sus adjuntos PDF/imagen) · se guarda una copia del original sin modificar en este navegador</small>
+    <b>Arrastra aquí PDF, imágenes o correos guardados (.msg / .eml)</b> · pega una imagen con <b>Ctrl+V</b> · o haz clic para seleccionar
+    <small>PDF, JPG, PNG, TIFF, los correos deben estar guardados como archivo (no se pueden arrastrar directamente desde Outlook); se indexan también sus adjuntos PDF/imagen · se guarda una copia del original sin modificar en este navegador</small>
   </div>
   <input id="file" type="file" multiple hidden accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.msg,.eml">
   <div id="upmsgs"></div>
