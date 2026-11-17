@@ -15,7 +15,8 @@ const normChar = c => { const d = c.normalize('NFD')[0].toLowerCase(); return d.
 const normLen = s => Array.from(s).map(normChar).join('');
 const normTerm = t => t.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 
-let mini, root = null, cancel = false, busy = false;
+let mini, cancel = false, busy = false;
+const roots = new Map();   // rootId -> { id, name, handle }
 const docsById = new Map();
 
 function newMini() {
@@ -29,7 +30,7 @@ const pid = (d, p) => `${d}:${p}`;
 
 async function loadIndex() {
   newMini(); docsById.clear();
-  for (const d of await DB.all('docs')) docsById.set(d.id, d);
+  for (const d of await DB.all('docs')) { if (d.source === 'carpeta' && d.rootId == null) d.rootId = 1; docsById.set(d.id, d); }
   const pages = await DB.all('pages');
   mini.addAll(pages.map(p => ({ id: pid(p.docId, p.pageNo), docId: p.docId, pageNo: p.pageNo, text: p.text })));
 }
@@ -68,7 +69,7 @@ async function parseEmail(ext, buf) {
 const mailText = r => [`Asunto: ${r.subject}`, `De: ${r.from}`, `Para: ${r.to}`, r.cc ? `CC: ${r.cc}` : null, `Fecha: ${r.date ? r.date.replace('T', ' ').slice(0, 16) : ''}`, '', r.body].filter(x => x !== null).join('\n');
 
 // ---- ingesta ----
-async function ingest({ file, buf, key, path, source, via, fileDate, parent }) {
+async function ingest({ file, buf, key, path, source, via, fileDate, parent, rootId }) {
   const name = file.name, ext = extOf(name);
   if (!ALL_EXT.includes(ext)) { await DB.addLog('error', name, `Formato no admitido: .${ext}`); return { status: 'error', msg: `Formato no admitido: .${ext}` }; }
   if (!buf.byteLength) { await DB.addLog('error', name, 'Archivo vacío'); return { status: 'error', msg: 'Archivo vacío' }; }
@@ -79,7 +80,7 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent }) {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
   const doc = {
     sha256: sha, key, name, path: path || null, storedName: `${stamp}_${kind}_${sha.slice(0, 8)}.${ext}`,
-    kind, mime: file.type || '', source, via, size: buf.byteLength, fileDate, parentId: parent?.id ?? null,
+    kind, mime: file.type || '', source, via, size: buf.byteLength, fileDate, parentId: parent?.id ?? null, rootId: rootId ?? null,
     subject: parent?.subject ?? null, sender: parent?.sender ?? null, emailDate: parent?.emailDate ?? null, ingestedAt: new Date().toISOString(), pages: 0, status: 'ok',
   };
   if (dup) {
@@ -166,40 +167,61 @@ async function ensurePerm(handle) {
   if ((await handle.queryPermission({ mode: 'read' })) === 'granted') return true;
   return (await handle.requestPermission({ mode: 'read' })) === 'granted';
 }
-async function setRoot(h, remember = true) {
-  root = h; $('#foldername').textContent = h.name; $('#scan').disabled = false;
-  if (remember) await DB.put('meta', { handle: h, name: h.name }, 'folder');
+async function saveRoots() {
+  await DB.put('meta', [...roots.values()].map(r => ({ id: r.id, name: r.name, handle: r.handle })), 'folders');
+}
+function renderRoots() {
+  $('#folders').innerHTML = roots.size ? [...roots.values()].map(r =>
+    `<span class="tag" style="font-size:13px;padding:3px 9px">📁 ${esc(r.name)} <a href="#" data-rmroot="${r.id}" title="Quitar carpeta y sus documentos del índice">✕</a></span>`).join(' ')
+    : '<span class="m">ninguna (elige una carpeta de documentos y/o una de correos)</span>';
+  $('#scan').disabled = !roots.size;
+}
+async function addRoot(h, remember = true) {
+  for (const r of roots.values()) if (await r.handle.isSameEntry(h)) return r;   // ya añadida
+  const id = (Math.max(0, ...roots.keys()) || 0) + 1, r = { id, name: h.name, handle: h };
+  roots.set(id, r); renderRoots(); if (remember) await saveRoots(); return r;
+}
+async function removeRoot(id) {
+  const r = roots.get(id); if (!r) return;
+  if (!confirm(`Se quitará la carpeta «${r.name}» y sus documentos y correos del índice. No se toca ningún archivo del disco. ¿Continuar?`)) return;
+  for (const d of [...docsById.values()]) if (d.rootId === id || (d.parentId && docsById.get(d.parentId)?.rootId === id)) await removeDoc(d.id);
+  roots.delete(id); renderRoots(); await saveRoots(); await refresh(); await runSearch();
 }
 async function pickFolder() {
   if (!window.showDirectoryPicker) return addMsg('error', 'Este navegador no permite elegir carpetas. Usa Edge o Chrome (o arrastra/pega/selecciona archivos).');
-  try { const h = await window.showDirectoryPicker({ id: 'feedback-docs', mode: 'read' }); await setRoot(h); await scan(); }
+  try { const h = await window.showDirectoryPicker({ id: 'feedback-docs', mode: 'read' }); await addRoot(h); await scan(); }
   catch (e) { if (e.name !== 'AbortError') addMsg('error', esc(e.message)); }
 }
 async function scan() {
-  if (!root) return;
+  if (!roots.size) return;
   if (busy) return addMsg('error', 'Hay un proceso en marcha; espera a que termine.');
-  if (!(await ensurePerm(root))) return addMsg('error', 'Sin permiso de lectura sobre la carpeta.');
+  const ok = [];
+  for (const r of roots.values()) { if (await ensurePerm(r.handle)) ok.push(r); else addMsg('error', `Sin permiso de lectura sobre «${esc(r.name)}».`); }
+  if (!ok.length) return;
   busy = true; cancel = false; $('#cancel').hidden = false;
   let n = { ok: 0, dup: 0, err: 0, skip: 0, mod: 0 };
   try {
-    setStatus('Buscando archivos en la carpeta…', 'info');
-    const found = []; for await (const e of walk(root)) found.push(e);
-    let i = 0;
-    for (const e of found) {
-      if (cancel) break; i++;
-      const key = 'c:' + e.path.join('/');
-      const file = await e.handle.getFile();
-      const fileDate = new Date(file.lastModified).toISOString();
-      const prev = (await DB.byIndex('docs', 'key', key))[0];
-      if (prev && prev.size === file.size && prev.fileDate === fileDate && prev.status !== 'error') { n.skip++; continue; }
-      if (prev) { await removeDoc(prev.id); n.mod++; await DB.addLog('info', file.name, 'Archivo modificado en la carpeta: se reindexa'); }
-      setStatus(`(${i}/${found.length}) ${e.path.join('/')}`, 'info');
-      const buf = await file.arrayBuffer();
-      const r = await ingest({ file, buf, key, path: e.path, source: 'carpeta', via: 'carpeta', fileDate });
-      if (r.status === 'ok') n.ok++; else if (r.status === 'duplicado') n.dup++; else n.err++;
-      if (r.status !== 'ok') addMsg(r.status, `<b>${esc(e.path.join('/'))}</b> — ${esc(r.msg)}`);
+    for (const r of ok) {
+      setStatus(`Buscando archivos en «${r.name}»…`, 'info');
+      const found = []; for await (const e of walk(r.handle)) found.push(e);
+      let i = 0;
+      for (const e of found) {
+        if (cancel) break; i++;
+        const key = `c:${r.id}:${e.path.join('/')}`;
+        const file = await e.handle.getFile();
+        const fileDate = new Date(file.lastModified).toISOString();
+        const prev = (await DB.byIndex('docs', 'key', key))[0];
+        if (prev && prev.size === file.size && prev.fileDate === fileDate && prev.status !== 'error') { n.skip++; continue; }
+        if (prev) { await removeDoc(prev.id); n.mod++; await DB.addLog('info', file.name, 'Archivo modificado en la carpeta: se reindexa'); }
+        setStatus(`«${r.name}» (${i}/${found.length}) ${e.path.join('/')}`, 'info');
+        const buf = await file.arrayBuffer();
+        const res = await ingest({ file, buf, key, path: e.path, source: 'carpeta', via: 'carpeta', fileDate, rootId: r.id });
+        if (res.status === 'ok') n.ok++; else if (res.status === 'duplicado') n.dup++; else n.err++;
+        if (res.status !== 'ok') addMsg(res.status, `<b>${esc(r.name + '/' + e.path.join('/'))}</b> — ${esc(res.msg)}`);
+      }
+      if (cancel) break;
     }
-    addMsg(cancel ? 'duplicado' : 'ok', `${cancel ? 'Interrumpido. ' : 'Carpeta procesada. '}Nuevos: ${n.ok} · ya indexados: ${n.skip} · modificados: ${n.mod} · duplicados: ${n.dup} · errores: ${n.err}`);
+    addMsg(cancel ? 'duplicado' : 'ok', `${cancel ? 'Interrumpido. ' : 'Carpetas procesadas. '}Nuevos: ${n.ok} · ya indexados: ${n.skip} · modificados: ${n.mod} · duplicados: ${n.dup} · errores: ${n.err}`);
   } catch (e) { addMsg('error', 'Error al leer la carpeta: ' + esc(e.message)); }
   finally { busy = false; $('#cancel').hidden = true; setStatus(''); await refresh(); await runSearch(); }
 }
@@ -211,9 +233,10 @@ async function getFileOfDoc(d) {
     if (!b) throw new Error('El original no está en este navegador (índice importado sin archivos).');
     return b;
   }
-  if (!root) throw new Error('Elige primero la carpeta de documentos.');
-  if (!(await ensurePerm(root))) throw new Error('Sin permiso sobre la carpeta (pulsa de nuevo y acepta).');
-  let h = root;
+  const r = roots.get(d.rootId);
+  if (!r) throw new Error('La carpeta de este documento no está añadida: vuelve a elegirla.');
+  if (!(await ensurePerm(r.handle))) throw new Error('Sin permiso sobre la carpeta (pulsa de nuevo y acepta).');
+  let h = r.handle;
   for (const seg of d.path.slice(0, -1)) h = await h.getDirectoryHandle(seg);
   return (await (await h.getFileHandle(d.path.at(-1))).getFile());
 }
@@ -273,7 +296,7 @@ async function runSearch() {
     }
   }
   $('#results').innerHTML = rows.length ? rows.map(({ d, p, snip }) => {
-    const where = d.path ? d.path.join(' / ') : d.name, low = p.conf != null && p.conf < LOW_CONF, mail = d.kind === 'correo';
+    const where = d.path ? [roots.get(d.rootId)?.name, ...d.path].filter(Boolean).join(' / ') : d.name, low = p.conf != null && p.conf < LOW_CONF, mail = d.kind === 'correo';
     const par = d.parentId ? docsById.get(d.parentId) : null;
     return `<div class="res"><div class="t"><a href="#" ${mail ? 'data-detail' : 'data-open'}="${d.id}" data-page="${p.pageNo}">${esc(mail ? (d.subject || d.name) : d.name)}</a> <span class="m">· ${mail ? 'correo' : 'pág. ' + p.pageNo}</span></div>
       ${(mail || par) ? `<div class="m">${mail ? '' : 'Adjunto del correo «' + esc(par?.subject || '') + '» · '}De: ${esc(d.sender || '')}${mail ? ' · Para: ' + esc(d.to || '') : ''} · ${fdate(d.emailDate)}</div>` : ''}
@@ -330,8 +353,9 @@ async function importIndex(file) {
 
 // ---- eventos ----
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-detail],[data-proc]'); if (!t) return;
+  const t = e.target.closest('[data-open],[data-detail],[data-proc],[data-rmroot]'); if (!t) return;
   e.preventDefault();
+  if (t.dataset.rmroot) return removeRoot(+t.dataset.rmroot);
   if (t.dataset.open) openOriginal(+t.dataset.open, +t.dataset.page);
   else if (t.dataset.detail) showDoc(+t.dataset.detail, +t.dataset.page);
   else openProcessed(+t.dataset.proc, +t.dataset.page);
@@ -366,8 +390,10 @@ $('#wipe').onclick = async () => {
   await DB.open(); await loadIndex();
   navigator.storage?.persist?.();
   if (!window.showDirectoryPicker) $('#nofs').hidden = false;
-  const m = await DB.get('meta', 'folder');
-  if (m?.handle) { root = m.handle; $('#foldername').textContent = m.name; $('#scan').disabled = false; }
-  window.__feedback = { setRoot: h => setRoot(h, false), scan, importFiles, ready: true };   // gancho para pruebas automáticas
+  let saved = await DB.get('meta', 'folders');
+  if (!saved) { const old = await DB.get('meta', 'folder'); saved = old ? [{ id: 1, name: old.name, handle: old.handle }] : []; }
+  for (const r of saved) roots.set(r.id, r);
+  renderRoots();
+  window.__feedback = { addRoot: h => addRoot(h, false), scan, importFiles, ready: true };   // gancho para pruebas automáticas
   await refresh(); await runSearch();
 })();

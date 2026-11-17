@@ -11,13 +11,14 @@
 <main>
 
 <section class="card">
-  <h2>1 · Carpeta de documentos</h2>
+  <h2>1 · Carpetas de documentos y correos</h2>
   <div class="row">
-    <button id="pick">Elegir carpeta…</button>
-    <button id="scan" class="sec" disabled>Buscar archivos nuevos o modificados</button>
+    <button id="pick">Añadir carpeta…</button>
+    <button id="scan" class="sec" disabled>Buscar nuevos o modificados</button>
     <button id="cancel" class="sec" hidden>Cancelar</button>
-    <span class="m">Carpeta: <b id="foldername">ninguna</b> (solo lectura: nunca se modifica)</span>
+    <span class="m">Carpetas (solo lectura, nunca se modifican):</span> <span id="folders"></span>
   </div>
+  <p class="m" style="margin:8px 0 0">Una carpeta puede mezclar PDF, imágenes y correos (<b>.msg</b> / <b>.eml</b>), o puedes añadir una carpeta de documentos y otra de correos. Se recorren las subcarpetas.</p>
   <div id="nofs" class="msg error" hidden>Este navegador no permite elegir carpetas. Usa Edge o Chrome, o incorpora archivos con la zona de abajo.</div>
   <div id="status" class="msg info" hidden></div>
 </section>

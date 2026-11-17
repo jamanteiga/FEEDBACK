@@ -12,7 +12,7 @@ Aplicación 100 % estática (HTML + JS). No hay servidor: PDF.js lee los PDF, Te
 Prueba en local (opcional): `python -m http.server 8000` en esta carpeta y abrir http://localhost:8000
 
 ## Uso
-1. **Elegir carpeta…** → seleccionar la carpeta de PDF/imágenes (se recorren subcarpetas). Se indexan los archivos nuevos o modificados; los ya indexados se saltan.
+1. **Añadir carpeta…** → una o varias (p. ej. una de documentos y otra de correos `.msg`/`.eml`; también pueden estar mezclados). Se recorren las subcarpetas; los archivos ya indexados se saltan y los modificados se reindexan. La ✕ quita una carpeta y sus documentos del índice (no toca el disco).
 2. **Archivos sueltos:** arrastrar, Ctrl+V o seleccionar. Se guarda una copia del original en el navegador.
 3. **Buscar:** texto sin distinguir tildes, "frase exacta", tipo y fecha del archivo. Clic en el nombre → abre el original en la página del resultado (PDF).
 4. Al volver otro día: *Buscar archivos nuevos o modificados* pide un clic para reconceder permiso a la carpeta.
@@ -22,6 +22,7 @@ Prueba en local (opcional): `python -m http.server 8000` en esta carpeta y abrir
 - Se indexan asunto, remitente, destinatarios, fecha y cuerpo (texto; si solo hay HTML, se convierte a texto). Filtros por **asunto** y **remitente**.
 - Los adjuntos PDF/imagen se indexan como documentos propios, enlazados al correo (heredan asunto, remitente y fecha). Las imágenes pequeñas incrustadas (firmas/logos) y los formatos no indexables (Word, Excel, zip…) se omiten y se listan en el detalle del correo.
 - "Abrir original" descarga el `.msg/.eml` para abrirlo en Outlook (el navegador no muestra correos).
+- Un adjunto idéntico a un documento ya indexado se registra como duplicado y no se vuelve a indexar (el correo enlaza al documento existente).
 - Si Outlook (p. ej. el "nuevo Outlook" o la versión web) no entrega ningún archivo al arrastrar, guarda el correo como `.msg`/`.eml` o PDF y arrástralo.
 
 ## Qué hace con cada archivo
