@@ -17,6 +17,13 @@ Prueba en local (opcional): `python -m http.server 8000` en esta carpeta y abrir
 3. **Buscar:** texto sin distinguir tildes, "frase exacta", tipo y fecha del archivo. Clic en el nombre → abre el original en la página del resultado (PDF).
 4. Al volver otro día: *Buscar archivos nuevos o modificados* pide un clic para reconceder permiso a la carpeta.
 
+## Correos de Outlook (.msg y .eml)
+- Se pueden **arrastrar directamente desde Outlook de escritorio** a la zona de entrada (se recibe como `.msg`). También `.eml`, o desde una carpeta.
+- Se indexan asunto, remitente, destinatarios, fecha y cuerpo (texto; si solo hay HTML, se convierte a texto). Filtros por **asunto** y **remitente**.
+- Los adjuntos PDF/imagen se indexan como documentos propios, enlazados al correo (heredan asunto, remitente y fecha). Las imágenes pequeñas incrustadas (firmas/logos) y los formatos no indexables (Word, Excel, zip…) se omiten y se listan en el detalle del correo.
+- "Abrir original" descarga el `.msg/.eml` para abrirlo en Outlook (el navegador no muestra correos).
+- Si Outlook (p. ej. el "nuevo Outlook" o la versión web) no entrega ningún archivo al arrastrar, guarda el correo como `.msg`/`.eml` o PDF y arrástralo.
+
 ## Qué hace con cada archivo
 - PDF: texto nativo por página; si hay <20 caracteres, rasteriza a 300 dpi y aplica OCR (spa+eng).
 - Imágenes (JPG, PNG, TIFF multipágina): gris, contraste, reescalado si es pequeña y enderezado; cada paso se registra y se ve en el detalle.

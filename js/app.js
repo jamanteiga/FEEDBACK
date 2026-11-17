@@ -4,7 +4,9 @@ import { sha256, processPdf, processImage } from './proc.js';
 const $ = s => document.querySelector(s);
 const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fdate = s => s ? s.replace('T', ' ').slice(0, 16) : '';
-const PDF_EXT = ['pdf'], IMG_EXT = ['jpg', 'jpeg', 'png', 'tif', 'tiff'];
+const PDF_EXT = ['pdf'], IMG_EXT = ['jpg', 'jpeg', 'png', 'tif', 'tiff'], MAIL_EXT = ['eml', 'msg'];
+const ALL_EXT = [...PDF_EXT, ...IMG_EXT, ...MAIL_EXT];
+const INLINE_MAX = 50 * 1024;   // imágenes pequeñas incrustadas (logos, firmas) no se indexan
 const LOW_CONF = 60;
 const extOf = n => (n.split('.').pop() || '').toLowerCase();
 
@@ -20,7 +22,7 @@ function newMini() {
   mini = new MiniSearch({
     fields: ['text'], storeFields: ['docId', 'pageNo'], idField: 'id',
     processTerm: t => normTerm(t) || null,
-    searchOptions: { prefix: true, combineWith: 'AND', processTerm: t => normTerm(t) || null },
+    searchOptions: { prefix: t => t.length > 2, combineWith: 'AND', processTerm: t => normTerm(t) || null },
   });
 }
 const pid = (d, p) => `${d}:${p}`;
@@ -36,31 +38,67 @@ async function loadIndex() {
 const setStatus = (t, cls = '') => { const e = $('#status'); e.className = 'msg ' + cls; e.textContent = t; e.hidden = !t; };
 const addMsg = (cls, html) => { $('#upmsgs').insertAdjacentHTML('afterbegin', `<div class="msg ${cls}">${html}</div>`); };
 
+// ---- correos (.eml / .msg) ----
+const htmlToText = h => {
+  const d = new DOMParser().parseFromString(String(h).replace(/<(br|\/p|\/div|\/tr|\/li|\/h\d)\b[^>]*>/gi, '\n'), 'text/html');
+  d.querySelectorAll('style,script,head').forEach(n => n.remove());
+  return d.body.textContent.replace(/[ \t ]+/g, ' ').replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
+};
+const addr = a => a ? (a.name && a.address ? `${a.name} <${a.address}>` : (a.address || a.name || '')) : '';
+async function parseEmail(ext, buf) {
+  let r;
+  if (ext === 'eml') {
+    const e = await new EmailLibs.PostalMime().parse(buf);
+    r = { subject: e.subject || '', from: addr(e.from), to: (e.to || []).map(addr).join('; '), cc: (e.cc || []).map(addr).join('; '),
+      date: e.date ? new Date(e.date).toISOString() : null, text: e.text || '', html: e.html || '',
+      atts: (e.attachments || []).map(a => ({ name: a.filename || 'adjunto', mime: a.mimeType || '', bytes: new Uint8Array(a.content), inline: a.disposition === 'inline' || !!a.related })) };
+  } else {
+    const m = new EmailLibs.MsgReader(buf), f = m.getFileData();
+    const rec = (f.recipients || []).map(x => x.name && x.email && x.name !== x.email ? `${x.name} <${x.email}>` : (x.email || x.name)).filter(Boolean);
+    const dt = f.messageDeliveryTime || f.clientSubmitTime || f.creationTime;
+    r = { subject: f.subject || '', from: f.senderName && f.senderEmail && f.senderName !== f.senderEmail ? `${f.senderName} <${f.senderEmail}>` : (f.senderEmail || f.senderName || ''),
+      to: rec.join('; '), cc: '', date: dt && !isNaN(new Date(dt)) ? new Date(dt).toISOString() : null, text: f.body || '', html: f.bodyHtml || '',
+      atts: (f.attachments || []).filter(a => !a.innerMsgContent).map(a => { const x = m.getAttachment(a); return { name: x.fileName || a.fileName || 'adjunto', mime: a.attachMimeTag || '', bytes: x.content, inline: !!(a.attachmentHidden || a.pidContentId) }; }) };
+  }
+  let method = 'cuerpo en texto plano', body = (r.text || '').trim();
+  if (body.length < 5 && r.html) { body = htmlToText(r.html); method = 'cuerpo convertido desde HTML'; }
+  r.body = body; r.method = method;
+  return r;
+}
+const mailText = r => [`Asunto: ${r.subject}`, `De: ${r.from}`, `Para: ${r.to}`, r.cc ? `CC: ${r.cc}` : null, `Fecha: ${r.date ? r.date.replace('T', ' ').slice(0, 16) : ''}`, '', r.body].filter(x => x !== null).join('\n');
+
 // ---- ingesta ----
-async function ingest({ file, buf, key, path, source, via, fileDate }) {
+async function ingest({ file, buf, key, path, source, via, fileDate, parent }) {
   const name = file.name, ext = extOf(name);
-  if (![...PDF_EXT, ...IMG_EXT].includes(ext)) { await DB.addLog('error', name, `Formato no admitido: .${ext}`); return { status: 'error', msg: `Formato no admitido: .${ext}` }; }
+  if (!ALL_EXT.includes(ext)) { await DB.addLog('error', name, `Formato no admitido: .${ext}`); return { status: 'error', msg: `Formato no admitido: .${ext}` }; }
   if (!buf.byteLength) { await DB.addLog('error', name, 'Archivo vacío'); return { status: 'error', msg: 'Archivo vacío' }; }
   const sha = await sha256(buf);
   const dups = await DB.byIndex('docs', 'sha', sha);
   const dup = dups.find(d => d.key !== key && d.status === 'ok');
-  const kind = PDF_EXT.includes(ext) ? 'pdf' : 'imagen';
+  const kind = PDF_EXT.includes(ext) ? 'pdf' : MAIL_EXT.includes(ext) ? 'correo' : 'imagen';
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
   const doc = {
     sha256: sha, key, name, path: path || null, storedName: `${stamp}_${kind}_${sha.slice(0, 8)}.${ext}`,
-    kind, mime: file.type || '', source, via, size: buf.byteLength, fileDate, ingestedAt: new Date().toISOString(), pages: 0, status: 'ok',
+    kind, mime: file.type || '', source, via, size: buf.byteLength, fileDate, parentId: parent?.id ?? null,
+    subject: parent?.subject ?? null, sender: parent?.sender ?? null, emailDate: parent?.emailDate ?? null, ingestedAt: new Date().toISOString(), pages: 0, status: 'ok',
   };
   if (dup) {
     doc.status = 'duplicado'; doc.error = `Duplicado exacto de #${dup.id} (${dup.path ? dup.path.join('/') : dup.name})`;
     doc.id = await DB.put('docs', doc); docsById.set(doc.id, doc);
     await DB.addLog('duplicado', name, doc.error);
-    return { status: 'duplicado', msg: doc.error };
+    return { status: 'duplicado', msg: doc.error, docId: dup.id };
   }
   doc.id = await DB.put('docs', doc);
   try {
-    if (source === 'importado') await DB.put('blobs', new Blob([buf], { type: file.type }), doc.id);
+    if (source !== 'carpeta') await DB.put('blobs', new Blob([buf], { type: file.type }), doc.id);
     const onP = t => setStatus(`${name}: ${t}`, 'info'), onS = t => setStatus(t, 'info');
-    const pages = kind === 'pdf' ? await processPdf(buf, onP, onS) : await processImage(file, buf, onP, onS);
+    let pages, mailAtts = [];
+    if (kind === 'correo') {
+      const m = await parseEmail(ext, buf);
+      Object.assign(doc, { subject: m.subject, sender: m.from, to: m.to, emailDate: m.date });
+      pages = [{ pageNo: 1, method: 'correo', conf: null, text: mailText(m), steps: [{ step: 'extraccion_correo', detail: m.method }], processed: null }];
+      mailAtts = m.atts;
+    } else pages = kind === 'pdf' ? await processPdf(buf, onP, onS) : await processImage(file, buf, onP, onS);
     let low = 0; const mini_docs = [];
     for (const p of pages) {
       await DB.put('pages', { docId: doc.id, pageNo: p.pageNo, method: p.method, conf: p.conf, text: p.text, steps: p.steps });
@@ -70,9 +108,26 @@ async function ingest({ file, buf, key, path, source, via, fileDate }) {
     }
     mini.addAll(mini_docs);
     doc.pages = pages.length; await DB.put('docs', doc); docsById.set(doc.id, doc);
-    const msg = `Indexado (${pages.length} pág.)` + (low ? ` — ${low} pág. con OCR de baja confianza` : '');
+    let msg = kind === 'correo' ? 'Correo indexado' : `Indexado (${pages.length} pág.)`;
+    if (low) msg += ` — ${low} pág. con OCR de baja confianza`;
+    if (kind === 'correo') {
+      doc.attachments = []; let nOk = 0, nSkip = 0, nInl = 0;
+      for (const [i, a] of mailAtts.entries()) {
+        const aext = extOf(a.name), entry = { name: a.name, size: a.bytes.byteLength, docId: null, note: '' };
+        if (![...PDF_EXT, ...IMG_EXT].includes(aext)) { entry.note = 'formato no indexable'; nSkip++; await DB.addLog('info', name, `Adjunto no indexado (${aext || 'sin extensión'}): ${a.name}`); }
+        else if (a.inline && IMG_EXT.includes(aext) && a.bytes.byteLength < INLINE_MAX) { entry.note = 'imagen incrustada pequeña (firma/logo)'; nInl++; }
+        else {
+          const ab = a.bytes.buffer.slice(a.bytes.byteOffset, a.bytes.byteOffset + a.bytes.byteLength);
+          const r = await ingest({ file: new File([ab], a.name, { type: a.mime }), buf: ab, key: `a:${doc.sha256}:${i}`, source: 'adjunto', via: `adjunto de #${doc.id}`, fileDate: doc.emailDate || doc.fileDate, parent: doc });
+          entry.note = r.status === 'ok' ? 'indexado' : r.msg; entry.docId = r.docId ?? null; if (r.status === 'ok') nOk++;
+        }
+        doc.attachments.push(entry);
+      }
+      await DB.put('docs', doc); docsById.set(doc.id, doc);
+      msg += ` — adjuntos: ${nOk} indexados` + (nSkip ? `, ${nSkip} de formato no indexable` : '') + (nInl ? `, ${nInl} imágenes incrustadas omitidas` : '');
+    }
     await DB.addLog('info', name, msg);
-    return { status: 'ok', msg };
+    return { status: 'ok', msg, docId: doc.id };
   } catch (e) {
     doc.status = 'error'; doc.error = String(e.message || e); await DB.put('docs', doc); docsById.set(doc.id, doc);
     await DB.addLog('error', name, `Fallo de procesamiento: ${doc.error}`);
@@ -103,7 +158,7 @@ async function* walk(dir, path = []) {
   for await (const [name, h] of dir.entries()) {
     if (name.startsWith('.') || name === '$RECYCLE.BIN') continue;
     if (h.kind === 'directory') yield* walk(h, [...path, name]);
-    else if ([...PDF_EXT, ...IMG_EXT].includes(extOf(name))) yield { handle: h, path: [...path, name] };
+    else if (ALL_EXT.includes(extOf(name))) yield { handle: h, path: [...path, name] };
   }
 }
 async function ensurePerm(handle) {
@@ -151,7 +206,7 @@ async function scan() {
 
 // ---- abrir originales ----
 async function getFileOfDoc(d) {
-  if (d.source === 'importado') {
+  if (d.source !== 'carpeta') {
     const b = await DB.get('blobs', d.id);
     if (!b) throw new Error('El original no está en este navegador (índice importado sin archivos).');
     return b;
@@ -166,6 +221,9 @@ async function openOriginal(id, page) {
   const w = window.open('', '_blank');
   try {
     const d = docsById.get(id); let f = await getFileOfDoc(d);
+    if (d.kind === 'correo') {   // el navegador no muestra correos: se descarga el original para abrirlo en Outlook
+      w?.close(); const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = d.name; a.click(); return;
+    }
     if (d.kind === 'pdf') f = new Blob([f], { type: 'application/pdf' });
     else if (!f.type) f = new Blob([f], { type: 'image/' + (extOf(d.name) === 'jpg' ? 'jpeg' : extOf(d.name)) });
     const url = URL.createObjectURL(f) + (d.kind === 'pdf' && page ? `#page=${page}` : '');
@@ -195,7 +253,10 @@ function snippet(text, terms) {
 }
 async function runSearch() {
   const q = $('#q').value.trim(), kind = $('#kind').value, desde = $('#desde').value, hasta = $('#hasta').value;
-  const okDoc = d => d && d.status === 'ok' && (!kind || d.kind === kind) && (!desde || d.fileDate.slice(0, 10) >= desde) && (!hasta || d.fileDate.slice(0, 10) <= hasta);
+  const asu = normTerm($('#asunto').value.trim()), rem = normTerm($('#remitente').value.trim());
+  const dd = d => (d.emailDate || d.fileDate).slice(0, 10);
+  const okDoc = d => d && d.status === 'ok' && (!kind || d.kind === kind) && (!desde || dd(d) >= desde) && (!hasta || dd(d) <= hasta)
+    && (!asu || normTerm(d.subject || '').includes(asu)) && (!rem || normTerm(d.sender || '').includes(rem));
   let rows = [];
   if (q) {
     const { words, phrases } = parseQuery(q);
@@ -212,12 +273,14 @@ async function runSearch() {
     }
   }
   $('#results').innerHTML = rows.length ? rows.map(({ d, p, snip }) => {
-    const where = d.path ? d.path.join(' / ') : d.name, low = p.conf != null && p.conf < LOW_CONF;
-    return `<div class="res"><div class="t"><a href="#" data-open="${d.id}" data-page="${p.pageNo}">${esc(d.name)}</a> <span class="m">· pág. ${p.pageNo}</span></div>
+    const where = d.path ? d.path.join(' / ') : d.name, low = p.conf != null && p.conf < LOW_CONF, mail = d.kind === 'correo';
+    const par = d.parentId ? docsById.get(d.parentId) : null;
+    return `<div class="res"><div class="t"><a href="#" ${mail ? 'data-detail' : 'data-open'}="${d.id}" data-page="${p.pageNo}">${esc(mail ? (d.subject || d.name) : d.name)}</a> <span class="m">· ${mail ? 'correo' : 'pág. ' + p.pageNo}</span></div>
+      ${(mail || par) ? `<div class="m">${mail ? '' : 'Adjunto del correo «' + esc(par?.subject || '') + '» · '}De: ${esc(d.sender || '')}${mail ? ' · Para: ' + esc(d.to || '') : ''} · ${fdate(d.emailDate)}</div>` : ''}
       <div class="s">${snip}</div>
-      <div class="m"><span class="tag">${d.kind}</span><span class="tag">${p.method === 'ocr' ? 'OCR ' + Math.round(p.conf) + '%' : 'texto nativo'}</span>
+      <div class="m"><span class="tag">${d.kind}</span><span class="tag">${p.method === 'ocr' ? 'OCR ' + Math.round(p.conf) + '%' : p.method === 'correo' ? 'cuerpo del correo' : 'texto nativo'}</span>
       ${low ? '<span class="tag warn">⚠ OCR de baja confianza: verificar contra el original</span>' : ''}
-      ${esc(where)} · archivo de ${fdate(d.fileDate)} · <a href="#" data-detail="${d.id}" data-page="${p.pageNo}">ver texto extraído</a>
+      ${esc(where)} · ${mail ? '<a href="#" data-open="' + d.id + '" data-page="1">abrir original (' + esc(d.name.split('.').pop()) + ')</a> · ' : 'archivo de ' + fdate(d.fileDate) + ' · '}<a href="#" data-detail="${d.id}" data-page="${p.pageNo}">ver texto extraído</a>
       ${d.kind === 'imagen' ? ` · <a href="#" data-proc="${d.id}" data-page="${p.pageNo}">versión procesada</a>` : ''}</div></div>`;
   }).join('') : '<div class="empty">Sin resultados.</div>';
 }
@@ -227,7 +290,9 @@ async function showDoc(id, page) {
   const pg = pages.find(p => p.pageNo === page) || pages[0]; if (!pg) return;
   $('#detailcard').hidden = false;
   $('#detail').innerHTML = `<div><b>${esc(d.name)}</b> <span class="m">→ nombre asignado ${esc(d.storedName)} · SHA-256 ${esc(d.sha256.slice(0, 16))}…</span></div>
-    <div class="m">Página ${pg.pageNo} de ${d.pages} · ${pg.method === 'ocr' ? 'OCR (confianza media ' + Math.round(pg.conf) + '%)' : 'texto nativo del PDF'}</div>
+    ${d.kind === 'correo' ? `<div class="m"><b>Adjuntos:</b> ${(d.attachments || []).length ? d.attachments.map(a => (a.docId ? `<a href="#" data-detail="${a.docId}" data-page="1">${esc(a.name)}</a>` : esc(a.name)) + ' <span class="tag">' + esc(a.note) + '</span>').join(' · ') : 'ninguno'} · <a href="#" data-open="${d.id}" data-page="1">abrir original</a></div>` : ''}
+    ${d.parentId && docsById.get(d.parentId) ? `<div class="m">Adjunto del correo <a href="#" data-detail="${d.parentId}" data-page="1">«${esc(docsById.get(d.parentId).subject)}»</a> · <a href="#" data-open="${d.id}" data-page="1">abrir adjunto</a></div>` : ''}
+    <div class="m">${d.kind === 'correo' ? 'Correo' : 'Página ' + pg.pageNo + ' de ' + d.pages} · ${pg.method === 'correo' ? 'texto extraído del correo' : pg.method === 'ocr' ? 'OCR (confianza media ' + Math.round(pg.conf) + '%)' : 'texto nativo del PDF'}</div>
     <pre>${esc(pg.text) || '(sin texto)'}</pre>
     <div class="m"><b>Transformaciones aplicadas:</b> ${pg.steps?.length ? pg.steps.map(s => esc(s.step) + ' (' + esc(s.detail) + ')').join(' · ') : 'ninguna (texto nativo)'}</div>
     <div style="margin-top:8px">${pages.map(p => `<a href="#" data-detail="${id}" data-page="${p.pageNo}">p.${p.pageNo}</a>`).join(' · ')}</div>`;
@@ -279,7 +344,7 @@ $('#file').onchange = e => { importFiles([...e.target.files], 'seleccionar'); e.
 drop.addEventListener('drop', e => {
   const files = [...e.dataTransfer.files];
   if (files.length) importFiles(files, 'arrastrar');
-  else addMsg('error', 'El origen arrastrado no entregó ningún archivo (típico al arrastrar desde Teams). Prueba Ctrl+V o descarga la imagen.');
+  else addMsg('error', 'El origen arrastrado no entregó ningún archivo. Correos: arrastra desde Outlook de escritorio (clásico) o guarda el correo como .msg/.eml/PDF y arrástralo. Imágenes de Teams: prueba Ctrl+V o descárgalas.');
 });
 document.addEventListener('paste', e => {
   const files = [...(e.clipboardData?.files || [])]; if (!files.length) return; e.preventDefault();

@@ -1,0 +1,9 @@
+# Seguridad: nunca subir documentos ni datos
+*.pdf
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.png
+*.json
+data/
