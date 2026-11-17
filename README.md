@@ -20,7 +20,7 @@ Prueba en local (opcional): `python -m http.server 8000` en esta carpeta y abrir
 ## Correos de Outlook (.msg y .eml)
 - **Arrastrar un correo directamente desde Outlook al navegador no funciona** (el navegador no recibe archivo). Vías que sí funcionan:
   1. En Outlook, selecciona los correos y arrástralos a una carpeta abierta en el **Explorador de Windows**: se crean archivos `.msg`. Esa carpeta se añade con **Añadir carpeta…** (o se arrastran los `.msg` desde el Explorador a la zona de entrada).
-  2. Macro de Outlook `outlook_guardar_correos.bas`: guarda los correos seleccionados como `.msg` en la carpeta indicada (ver instrucciones al inicio del archivo; puede estar bloqueada por política de IT).
+  2. Script `guardar_correos_outlook.js`: en Outlook clásico selecciona los correos y haz **doble clic** en el archivo; guarda cada uno como `.msg` en la carpeta indicada dentro del script (variable `CARPETA`). Solo funciona con Outlook clásico abierto; IT podría bloquear Windows Script Host.
 - Se indexan asunto, remitente, destinatarios, fecha y cuerpo (texto; si solo hay HTML, se convierte a texto). Filtros por **asunto** y **remitente**.
 - Los adjuntos PDF/imagen se indexan como documentos propios, enlazados al correo (heredan asunto, remitente y fecha). Las imágenes pequeñas incrustadas (firmas/logos) y los formatos no indexables (Word, Excel, zip…) se omiten y se listan en el detalle del correo.
 - "Abrir original" descarga el `.msg/.eml` para abrirlo en Outlook (el navegador no muestra correos).
