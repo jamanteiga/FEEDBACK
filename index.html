@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FEEDBACK</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><h1>FEEDBACK</h1><span>Documentación técnica · versión navegador v0.2 · todo se procesa y guarda en este equipo</span></header>
+<main>
+
+<section class="card">
+  <h2>1 · Carpeta de documentos</h2>
+  <div class="row">
+    <button id="pick">Elegir carpeta…</button>
+    <button id="scan" class="sec" disabled>Buscar archivos nuevos o modificados</button>
+    <button id="cancel" class="sec" hidden>Cancelar</button>
+    <span class="m">Carpeta: <b id="foldername">ninguna</b> (solo lectura: nunca se modifica)</span>
+  </div>
+  <div id="nofs" class="msg error" hidden>Este navegador no permite elegir carpetas. Usa Edge o Chrome, o incorpora archivos con la zona de abajo.</div>
+  <div id="status" class="msg info" hidden></div>
+</section>
+
+<section class="card">
+  <h2>2 · Incorporar archivos sueltos</h2>
+  <div id="drop" tabindex="0">
+    <b>Arrastra aquí PDF o imágenes</b> · pega una imagen con <b>Ctrl+V</b> · o haz clic para seleccionar
+    <small>PDF, JPG, JPEG, PNG, TIFF · se guarda una copia del original sin modificar en este navegador</small>
+  </div>
+  <input id="file" type="file" multiple hidden accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff">
+  <div id="upmsgs"></div>
+</section>
+
+<section class="card">
+  <h2>3 · Buscar</h2>
+  <form id="sf" class="row">
+    <input type="search" id="q" placeholder='Texto a buscar (usa "comillas" para una frase)'>
+    <select id="kind"><option value="">Todos los tipos</option><option value="pdf">PDF</option><option value="imagen">Imagen</option></select>
+    <input type="date" id="desde" title="Fecha del archivo desde"><input type="date" id="hasta" title="Fecha del archivo hasta">
+    <button>Buscar</button>
+  </form>
+  <div id="results"></div>
+</section>
+
+<section class="card" id="detailcard" hidden>
+  <h2>Detalle del documento</h2><div id="detail"></div>
+</section>
+
+<section class="card">
+  <h2>Documentos y registro</h2>
+  <div id="docs"></div>
+  <h2 style="margin-top:16px">Registro de errores y duplicados</h2>
+  <div id="log"></div>
+</section>
+
+<section class="card">
+  <h2>Índice</h2>
+  <div class="row">
+    <button id="export" class="sec">Exportar índice (JSON)</button>
+    <label class="btn sec">Importar índice…<input id="import" type="file" accept=".json" hidden></label>
+    <button id="wipe" class="sec danger">Vaciar índice de este navegador</button>
+  </div>
+  <p class="m">El índice (texto extraído) vive en este navegador. Si se borran los datos del sitio, basta con volver a elegir la carpeta y reindexar. La exportación no incluye los originales.</p>
+</section>
+</main>
+
+<script src="vendor/pako.min.js"></script>
+<script src="vendor/UTIF.js"></script>
+<script src="vendor/minisearch.js"></script>
+<script src="vendor/tesseract/tesseract.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
