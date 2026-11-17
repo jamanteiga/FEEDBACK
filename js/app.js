@@ -175,6 +175,18 @@ async function excludeDoc(id) {
   selected.delete(id); kids.forEach(k => selected.delete(k));
   await DB.addLog('info', d.name, 'Eliminado del índice por el usuario'); await afterChange();
 }
+async function bulkDelete() {
+  const ids = [...selected].filter(id => docsById.has(id)); if (!ids.length) return;
+  if (!confirm(`¿Eliminar ${ids.length} documento(s) del índice (y sus adjuntos)?\nNo se borra ningún archivo del disco.`)) return;
+  for (const id of ids) {
+    const d = docsById.get(id); if (!d) continue;
+    for (const k of descendants(id)) await removeDoc(k);
+    if (d.source === 'carpeta') { for (const p of await DB.purgeContent(id)) mini.discard(pid(id, p)); if (Store.dir) await Store.removeDocFiles(id); Object.assign(d, { status: 'excluido', pages: 0, attachments: [], error: 'Excluido del índice por el usuario' }); delete d.title; delete d.tags; delete d.note; await DB.put('docs', d); }
+    else await removeDoc(id);
+    selected.delete(id);
+  }
+  await DB.addLog('info', 'varios', `${ids.length} documento(s) eliminados del índice por el usuario`); await afterChange();
+}
 async function restoreDoc(id) {
   const d = docsById.get(id); if (!d || d.status !== 'excluido') return;
   await removeDoc(id); await refresh(); await scan();
@@ -454,6 +466,7 @@ async function refresh() {
     <td>${d.status === 'ok' ? `<a href="#" data-open="${d.id}" data-page="1">original</a>` : `<span class="tag warn">${d.status}</span>`}</td>
     <td>${d.status === 'ok' ? `<a href="#" data-detail="${d.id}" data-page="1">ver/editar</a>${d.parentId ? '' : ` · <a href="#" data-act="reindex" data-id="${d.id}">reindexar</a>`} · <a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>` : d.status === 'excluido' ? `<a href="#" data-act="restore" data-id="${d.id}">restaurar</a>` : `<a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>`}</td></tr>`).join('') + '</table>' : '<div class="empty">Aún no hay documentos.</div>';
   $('#rep-sel').textContent = `Informe de los seleccionados (${selected.size})`; $('#rep-sel').disabled = !selected.size;
+  $('#bulk-del').textContent = `Eliminar seleccionados del índice (${selected.size})`; $('#bulk-del').disabled = !selected.size;
   const bad = (await DB.all('log')).filter(l => l.level !== 'info').reverse().slice(0, 100);
   $('#log').innerHTML = bad.length ? bad.map(l => `<div class="msg ${l.level}"><b>${esc(l.filename)}</b> — ${esc(l.message)} <span class="m">(${fdate(l.at)})</span></div>`).join('') : '<div class="empty">Sin incidencias.</div>';
 }
@@ -506,7 +519,7 @@ document.addEventListener('paste', e => {
   const files = [...(e.clipboardData?.files || [])]; if (!files.length) return; e.preventDefault();
   importFiles(files.map((f, i) => (f.name && f.name !== 'image.png') ? f : new File([f], `pegado_${Date.now()}_${i}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type })), 'pegar');
 });
-document.addEventListener('change', e => { const c = e.target.closest('[data-sel]'); if (!c) return; c.checked ? selected.add(+c.dataset.sel) : selected.delete(+c.dataset.sel); const b = $('#rep-sel'); b.textContent = `Informe de los seleccionados (${selected.size})`; b.disabled = !selected.size; });
+document.addEventListener('change', e => { const c = e.target.closest('[data-sel]'); if (!c) return; c.checked ? selected.add(+c.dataset.sel) : selected.delete(+c.dataset.sel); const b = $('#rep-sel'); b.textContent = `Informe de los seleccionados (${selected.size})`; b.disabled = !selected.size; $('#bulk-del').textContent = `Eliminar seleccionados del índice (${selected.size})`; $('#bulk-del').disabled = !selected.size; });
 document.addEventListener('click', e => { const b = e.target.closest('#ed-savemeta,#ed-savetext'); if (!b) return; b.id === 'ed-savemeta' ? editMeta(+b.dataset.doc) : savePageText(+b.dataset.doc, +b.dataset.page); });
 document.addEventListener('mousedown', e => { if (e.target.closest('#markbtn')) e.preventDefault(); });   // no perder la selección al pulsar
 document.addEventListener('click', e => { const b = e.target.closest('#markbtn'); if (b) addMark(+b.dataset.doc, +b.dataset.page); });
@@ -553,7 +566,7 @@ try { const a = JSON.parse(localStorage.getItem('fb-auto') || 'null'); if (a) { 
 setAuto();
 $('#cancel').onclick = () => { cancel = true; };
 $('#sf').onsubmit = e => { e.preventDefault(); runSearch(); };
-$('#export').onclick = exportIndex; $('#export2').onclick = exportIndex;
+$('#bulk-del').onclick = bulkDelete; $('#export').onclick = exportIndex; $('#export2').onclick = exportIndex;
 $('#import').onchange = async e => { try { await importIndex(e.target.files[0]); } catch (err) { addMsg('error', esc(err.message)); } e.target.value = ''; };
 $('#wipe').onclick = async () => {
   if (!confirm('Se borrará el índice, las marcas y los archivos importados de este navegador y TAMBIÉN la copia en la carpeta de datos (si la hay). No se toca ninguna carpeta de documentos ni ningún original. ¿Continuar?')) return;
