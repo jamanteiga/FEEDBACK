@@ -195,17 +195,21 @@ async function pickFolder() {
   try { const h = await window.showDirectoryPicker({ id: 'feedback-docs', mode: 'read' }); await addRoot(h); await scan(); }
   catch (e) { if (e.name !== 'AbortError') addMsg('error', esc(e.message)); }
 }
-async function scan() {
+async function scan(quiet = false) {   // quiet: pasada automática, sin mensajes si no hay novedades ni peticiones de permiso
   if (!roots.size) return;
-  if (busy) return addMsg('error', 'Hay un proceso en marcha; espera a que termine.');
+  if (busy) return quiet ? undefined : addMsg('error', 'Hay un proceso en marcha; espera a que termine.');
   const ok = [];
-  for (const r of roots.values()) { if (await ensurePerm(r.handle)) ok.push(r); else addMsg('error', `Sin permiso de lectura sobre «${esc(r.name)}».`); }
+  for (const r of roots.values()) {
+    const granted = quiet ? (await r.handle.queryPermission({ mode: 'read' })) === 'granted' : await ensurePerm(r.handle);
+    if (granted) ok.push(r); else if (!quiet) addMsg('error', `Sin permiso de lectura sobre «${esc(r.name)}».`);
+  }
+  $('#autohint').textContent = quiet && ok.length < roots.size ? '⏸ Reescaneo en pausa: pulsa «Buscar nuevos o modificados» para reconceder permiso a las carpetas.' : '';
   if (!ok.length) return;
   busy = true; cancel = false; $('#cancel').hidden = false;
-  let n = { ok: 0, dup: 0, err: 0, skip: 0, mod: 0 };
+  let n = { ok: 0, dup: 0, err: 0, skip: 0, mod: 0 }, changed = false;
   try {
     for (const r of ok) {
-      setStatus(`Buscando archivos en «${r.name}»…`, 'info');
+      if (!quiet) setStatus(`Buscando archivos en «${r.name}»…`, 'info');
       const found = []; for await (const e of walk(r.handle)) found.push(e);
       let i = 0;
       for (const e of found) {
@@ -224,9 +228,10 @@ async function scan() {
       }
       if (cancel) break;
     }
-    addMsg(cancel ? 'duplicado' : 'ok', `${cancel ? 'Interrumpido. ' : 'Carpetas procesadas. '}Nuevos: ${n.ok} · ya indexados: ${n.skip} · modificados: ${n.mod} · duplicados: ${n.dup} · errores: ${n.err}`);
+    changed = n.ok + n.mod + n.dup + n.err > 0;
+    if (!quiet || changed) addMsg(cancel ? 'duplicado' : 'ok', `${quiet ? 'Reescaneo automático. ' : ''}${cancel ? 'Interrumpido. ' : 'Carpetas procesadas. '}Nuevos: ${n.ok} · ya indexados: ${n.skip} · modificados: ${n.mod} · duplicados: ${n.dup} · errores: ${n.err}`);
   } catch (e) { addMsg('error', 'Error al leer la carpeta: ' + esc(e.message)); }
-  finally { busy = false; $('#cancel').hidden = true; setStatus(''); await refresh(); await runSearch(); }
+  finally { busy = false; $('#cancel').hidden = true; setStatus(''); if (!quiet || changed) { await refresh(); await runSearch(); } }
 }
 
 // ---- abrir originales ----
@@ -429,7 +434,17 @@ $('#rep-doc').onclick = () => {
 $('#rep-print').onclick = () => { const w = $('#reportframe').contentWindow; w.focus(); w.print(); };
 
 $('#pick').onclick = pickFolder;
-$('#scan').onclick = scan;
+$('#scan').onclick = () => scan();
+let autoTimer = null;
+function setAuto() {
+  clearInterval(autoTimer); const on = $('#auto').checked, sec = +$('#autoint').value;
+  try { localStorage.setItem('fb-auto', JSON.stringify({ on, sec })); } catch { /* sin almacenamiento: no pasa nada */ }
+  if (!on) $('#autohint').textContent = '';
+  if (on) autoTimer = setInterval(() => { if (!busy && roots.size) scan(true); }, sec * 1000);
+}
+$('#auto').onchange = $('#autoint').onchange = setAuto;
+try { const a = JSON.parse(localStorage.getItem('fb-auto') || 'null'); if (a) { $('#auto').checked = !!a.on; if ([...$('#autoint').options].some(o => +o.value === a.sec)) $('#autoint').value = a.sec; } } catch { /* ignorar */ }
+setAuto();
 $('#cancel').onclick = () => { cancel = true; };
 $('#sf').onsubmit = e => { e.preventDefault(); runSearch(); };
 $('#export').onclick = exportIndex;

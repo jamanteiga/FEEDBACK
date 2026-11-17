@@ -20,7 +20,10 @@ Prueba en local (opcional): `python -m http.server 8000` en esta carpeta y abrir
 ## Correos de Outlook (.msg y .eml)
 - **Arrastrar un correo directamente desde Outlook al navegador no funciona** (el navegador no recibe archivo). Vías que sí funcionan:
   1. En Outlook, selecciona los correos y arrástralos a una carpeta abierta en el **Explorador de Windows**: se crean archivos `.msg`. Esa carpeta se añade con **Añadir carpeta…** (o se arrastran los `.msg` desde el Explorador a la zona de entrada).
-  2. Script `guardar_correos_outlook.js`: en Outlook clásico selecciona los correos y haz **doble clic** en el archivo; guarda cada uno como `.msg` en la carpeta indicada dentro del script (variable `CARPETA`). Solo funciona con Outlook clásico abierto; IT podría bloquear Windows Script Host.
+  2. Script `guardar_correos_outlook.js`: en Outlook clásico selecciona los correos y haz **doble clic** en el archivo; guarda cada uno como `.msg` en la carpeta indicada (variable `CARPETA`).
+  3. **Automático (recomendado):** `exportar_carpeta_outlook.js`. Crea en Outlook una carpeta llamada `FEEDBACK`, edita `DESTINO` en el script y haz doble clic: queda en segundo plano y guarda como `.msg` todo correo que **arrastres a esa carpeta dentro de Outlook**. Para que arranque con Windows: `Win+R` → `shell:startup` → pega un acceso directo al script. Para pararlo: crea un archivo vacío `.parar` en `DESTINO`.
+  En la app, activa **Reescanear automáticamente** (sección 1) para que los correos nuevos se indexen solos mientras la pestaña esté abierta (la primera vez de cada sesión hay que pulsar «Buscar nuevos o modificados» para conceder permiso a las carpetas).
+  Todos estos scripts requieren Outlook clásico (no el «nuevo Outlook») y que IT no bloquee Windows Script Host.
 - Se indexan asunto, remitente, destinatarios, fecha y cuerpo (texto; si solo hay HTML, se convierte a texto). Filtros por **asunto** y **remitente**.
 - Los adjuntos PDF/imagen se indexan como documentos propios, enlazados al correo (heredan asunto, remitente y fecha). Las imágenes pequeñas incrustadas (firmas/logos) y los formatos no indexables (Word, Excel, zip…) se omiten y se listan en el detalle del correo.
 - "Abrir original" descarga el `.msg/.eml` para abrirlo en Outlook (el navegador no muestra correos).

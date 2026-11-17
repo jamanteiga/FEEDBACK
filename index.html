@@ -18,7 +18,8 @@
     <button id="cancel" class="sec" hidden>Cancelar</button>
     <span class="m">Carpetas (solo lectura, nunca se modifican):</span> <span id="folders"></span>
   </div>
-  <p class="m" style="margin:8px 0 0">Una carpeta puede mezclar PDF, imágenes y correos (<b>.msg</b> / <b>.eml</b>), o puedes añadir una carpeta de documentos y otra de correos. Se recorren las subcarpetas. <b>Correos de Outlook:</b> arrástralos desde Outlook a esa carpeta en el Explorador de Windows (o usa la macro <code>guardar_correos_outlook.js</code>) y pulsa «Buscar nuevos o modificados».</p>
+  <p class="m" style="margin:8px 0 0">Una carpeta puede mezclar PDF, imágenes y correos (<b>.msg</b> / <b>.eml</b>), o puedes añadir una carpeta de documentos y otra de correos. Se recorren las subcarpetas. <b>Correos de Outlook:</b> arrástralos desde Outlook a esa carpeta en el Explorador de Windows (o usa los scripts <code>guardar_correos_outlook.js</code> / <code>exportar_carpeta_outlook.js</code>) y pulsa «Buscar nuevos o modificados».</p>
+  <div class="row" style="margin-top:8px"><label class="m"><input type="checkbox" id="auto"> Reescanear automáticamente cada <select id="autoint" style="padding:3px 6px"><option value="15">15 s</option><option value="60" selected>1 min</option><option value="300">5 min</option></select> (solo mientras esta pestaña esté abierta)</label> <span id="autohint" class="m"></span></div>
   <div id="nofs" class="msg error" hidden>Este navegador no permite elegir carpetas. Usa Edge o Chrome, o incorpora archivos con la zona de abajo.</div>
   <div id="status" class="msg info" hidden></div>
 </section>
