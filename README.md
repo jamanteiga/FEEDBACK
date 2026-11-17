@@ -30,6 +30,20 @@ Prueba en local (opcional): `python -m http.server 8000` en esta carpeta y abrir
 - Un adjunto idéntico a un documento ya indexado se registra como duplicado y no se vuelve a indexar (el correo enlaza al documento existente).
 - Si Outlook (p. ej. el "nuevo Outlook" o la versión web) no entrega ningún archivo al arrastrar, guarda el correo como `.msg`/`.eml` o PDF y arrástralo.
 
+## Base de datos local y copia en disco
+- El índice vive en el navegador (IndexedDB) **de cada equipo**; casa y trabajo son independientes. Usa siempre la **misma URL y el mismo navegador/perfil** (cada dirección y cada perfil tiene su propia base de datos; una ventana privada no guarda nada).
+- Para que no se pierda de un día a otro, en *Base de datos y copia en disco* pulsa **Elegir carpeta de datos…** y elige una carpeta de ese ordenador (p. ej. `C:\FEEDBACK\datos`). Se guarda sola una copia tras cada cambio (índice, textos extraídos, marcas, registro, originales importados/adjuntos y versiones procesadas de imágenes).
+- Si el navegador pierde sus datos, al abrir la app se restaura sola desde esa carpeta si ya tiene permiso, o con **Restaurar desde la carpeta**. Las carpetas de documentos aparecen como «(volver a elegir)»: elígelas de nuevo (se reconocen por su nombre) y no se reindexa nada.
+- **Guardar copia completa ahora** fuerza una copia entera. Cada sesión nueva puede pedir un clic para reconceder permiso de escritura.
+- Esta copia es privada de cada equipo: no la sincronices entre casa y trabajo ni la subas a GitHub.
+
+## Adjuntos y otros documentos
+- De cada correo (y de cada ZIP) se extraen **todos** los adjuntos y se indexa su contenido: PDF e imágenes (con OCR), **Word (.docx), Excel (.xlsx), PowerPoint (.pptx)**, texto/CSV/HTML/RTF, **ZIP** (un nivel) y **correos anidados** (.eml/.msg), hasta 3 niveles.
+- El texto de Word/Excel/PowerPoint se extrae **directamente, sin convertir a PDF**: así no hace falta tener Office. La referencia es: hoja (Excel), diapositiva (PowerPoint), página aproximada (Word; solo si el documento guarda saltos de página) o bloque (texto). «Abrir original» descarga el archivo para abrirlo con su programa.
+- Formatos antiguos (.doc, .xls, .ppt) y otros (dwg, imágenes de otros tipos…) no se pueden indexar en el navegador: se listan en el detalle del correo. Guárdalos como .docx/.xlsx/.pptx o PDF.
+- Las imágenes pequeñas incrustadas (firmas/logos) se omiten.
+- Lo mismo vale para archivos sueltos y para carpetas: los .docx/.xlsx/.pptx/.txt/… se indexan igual.
+
 ## Informe resumen
 - En el detalle de un documento, selecciona un fragmento del texto y pulsa **★ Marcar selección como importante** (admite nota). Los puntos marcados se guardan con su página.
 - Sección **4 · Informe resumen**: elige documentos con las casillas de la tabla (o usa los resultados de la búsqueda, o todos) y genera el informe. Se previsualiza en pantalla y se descarga como **.doc (Word)** o se imprime/guarda como **PDF**.

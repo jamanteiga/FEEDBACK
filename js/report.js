@@ -27,14 +27,15 @@ const clip = s => s.length > 240 ? s.slice(0, 237) + '…' : s;
 
 // pages: [{pageNo, text, method, conf}] → { values:[{cat,value,ctx,page}], phrases:[{ctx,page}] }
 export function analyze(pages) {
+  const loc = p => p.label || p.pageNo;
   const values = [], phrases = [], seen = new Set();
   const push = (arr, o, k) => { const key = k + '|' + o.page; if (!seen.has(key)) { seen.add(key); arr.push(o); } };
   for (const p of pages) {
     for (const s of sentences(p.text || '')) {
-      for (const [cat, re] of VALUE_PATS) { re.lastIndex = 0; let m; while ((m = re.exec(s))) push(values, { cat, value: m[0].trim(), ctx: clip(s), page: p.pageNo }, cat + m[0] + s); }
-      NORM.lastIndex = 0; let n; while ((n = NORM.exec(s))) push(values, { cat: 'Normativa y referencias', value: n[0].trim(), ctx: clip(s), page: p.pageNo }, 'N' + n[0] + s);
-      for (const [cat, re] of KEY_PATS) if (re.test(s)) push(values, { cat, value: '—', ctx: clip(s), page: p.pageNo }, cat + s);
-      if (REQ.test(s)) push(phrases, { ctx: clip(s), page: p.pageNo }, 'P' + s);
+      for (const [cat, re] of VALUE_PATS) { re.lastIndex = 0; let m; while ((m = re.exec(s))) push(values, { cat, value: m[0].trim(), ctx: clip(s), page: loc(p) }, cat + m[0] + s); }
+      NORM.lastIndex = 0; let n; while ((n = NORM.exec(s))) push(values, { cat: 'Normativa y referencias', value: n[0].trim(), ctx: clip(s), page: loc(p) }, 'N' + n[0] + s);
+      for (const [cat, re] of KEY_PATS) if (re.test(s)) push(values, { cat, value: '—', ctx: clip(s), page: loc(p) }, cat + s);
+      if (REQ.test(s)) push(phrases, { ctx: clip(s), page: loc(p) }, 'P' + s);
     }
   }
   return { values, phrases };
@@ -62,13 +63,13 @@ export function buildReport({ items, opts, scope, now = new Date(), rootName }) 
       <tr><th>Páginas / identificación</th><td>${d.pages} · SHA-256 ${esc(d.sha256.slice(0, 16))}…</td></tr>
       ${avg != null ? `<tr><th>Calidad de OCR</th><td>${Math.round(avg)} % de confianza media${low.length ? ` <span class="warn">· ⚠ baja confianza en pág. ${low.join(', ')}: verificar contra el original</span>` : ''}</td></tr>` : ''}</table>`;
     h += `<h3>Puntos marcados por el usuario</h3>` + (marks.length
-      ? `<ul>${marks.map(m => `<li>«${esc(m.text)}» <span class="m">(pág. ${m.pageNo}${m.note ? ' · nota: ' + esc(m.note) : ''})</span></li>`).join('')}</ul>` : '<p class="m">Ninguno marcado.</p>');
+      ? `<ul>${marks.map(m => `<li>«${esc(m.text)}» <span class="m">(${(pages.find(q => q.pageNo === m.pageNo) || {}).label || 'pág. ' + m.pageNo}${m.note ? ' · nota: ' + esc(m.note) : ''})</span></li>`).join('')}</ul>` : '<p class="m">Ninguno marcado.</p>');
     if (opts.auto) {
       const byCat = {}; for (const v of an.values) (byCat[v.cat] ||= []).push(v);
       const cats = Object.keys(byCat);
       h += `<h3>Valores y referencias detectados automáticamente <span class="m">(propuestos · pendientes de revisión)</span></h3>`;
-      h += cats.length ? `<table><tr><th>Categoría</th><th>Valor</th><th>Texto literal</th><th>Pág.</th></tr>${cats.map(c => byCat[c].slice(0, 25).map(v => `<tr><td>${esc(c)}</td><td>${esc(v.value)}</td><td>${esc(v.ctx)}</td><td>${v.page}</td></tr>`).join('')).join('')}</table>` : '<p class="m">No se detectaron valores técnicos.</p>';
-      if (an.phrases.length) h += `<h3>Frases con carácter de requisito <span class="m">(extracto literal)</span></h3><ul>${an.phrases.slice(0, 12).map(p => `<li>${esc(p.ctx)} <span class="m">(pág. ${p.page})</span></li>`).join('')}</ul>`;
+      h += cats.length ? `<table><tr><th>Categoría</th><th>Valor</th><th>Texto literal</th><th>Ubicación</th></tr>${cats.map(c => byCat[c].slice(0, 25).map(v => `<tr><td>${esc(c)}</td><td>${esc(v.value)}</td><td>${esc(v.ctx)}</td><td>${v.page}</td></tr>`).join('')).join('')}</table>` : '<p class="m">No se detectaron valores técnicos.</p>';
+      if (an.phrases.length) h += `<h3>Frases con carácter de requisito <span class="m">(extracto literal)</span></h3><ul>${an.phrases.slice(0, 12).map(p => `<li>${esc(p.ctx)} <span class="m">(${typeof p.page === 'number' ? 'pág. ' + p.page : p.page})</span></li>`).join('')}</ul>`;
       for (const v of an.values) if (['Velocidades', 'Caudales', 'Presiones', 'Temperaturas', 'Requisitos acústicos', 'Normativa y referencias'].includes(v.cat))
         all.push({ ...v, doc: d, date: (d.emailDate || d.fileDate || '').slice(0, 10), n: i + 1 });
     }
@@ -79,7 +80,7 @@ export function buildReport({ items, opts, scope, now = new Date(), rootName }) 
   if (opts.auto && opts.compare && all.length) {
     const cats = [...new Set(all.map(v => v.cat))];
     cmp = `<h2>Cuadro comparativo de valores por categoría</h2><p class="nota">Se muestran juntos los valores detectados en distintos documentos, con su fuente y fecha. <b>No se determina cuál prevalece</b>: la jerarquía documental la define el criterio del ingeniero y las reglas del proyecto.</p>` +
-      cats.map(c => `<h3>${esc(c)}</h3><table><tr><th>Valor</th><th>Documento</th><th>Pág.</th><th>Fecha</th></tr>${all.filter(v => v.cat === c).sort((a, b) => a.value.localeCompare(b.value, 'es', { numeric: true })).map(v => `<tr><td>${esc(v.value)}</td><td>${v.n}. ${esc(v.doc.name)}</td><td>${v.page}</td><td>${esc(v.date)}</td></tr>`).join('')}</table>`).join('');
+      cats.map(c => `<h3>${esc(c)}</h3><table><tr><th>Valor</th><th>Documento</th><th>Ubicación</th><th>Fecha</th></tr>${all.filter(v => v.cat === c).sort((a, b) => a.value.localeCompare(b.value, 'es', { numeric: true })).map(v => `<tr><td>${esc(v.value)}</td><td>${v.n}. ${esc(v.doc.name)}</td><td>${v.page}</td><td>${esc(v.date)}</td></tr>`).join('')}</table>`).join('');
   }
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Informe resumen FEEDBACK</title><style>${CSS}</style></head><body>
     <h1>Informe resumen de documentación</h1><p class="m">Generado el ${when} · Alcance: ${esc(scope)} · ${items.length} documento(s)</p>

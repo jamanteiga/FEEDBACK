@@ -23,11 +23,12 @@ export const DB = {
       r.onerror = () => rej(r.error);
     });
   },
+  onChange: null,   // gancho para la copia en disco
   get: (s, k) => req(store(s).get(k)),
-  put: (s, v, k) => req(store(s, 'readwrite').put(v, k)),
-  del: (s, k) => req(store(s, 'readwrite').delete(k)),
+  async put(s, v, k) { const r = await req(store(s, 'readwrite').put(v, k)); DB.onChange?.('put', s, v, k, r); return r; },
+  async del(s, k) { await req(store(s, 'readwrite').delete(k)); DB.onChange?.('del', s, null, k); },
   all: s => req(store(s).getAll()),
-  clear: s => req(store(s, 'readwrite').clear()),
+  async clear(s) { await req(store(s, 'readwrite').clear()); DB.onChange?.('clear', s); },
   byIndex: (s, idx, val) => req(store(s).index(idx).getAll(IDBKeyRange.only(val))),
 
   async addLog(level, filename, message) {

@@ -27,10 +27,10 @@
 <section class="card">
   <h2>2 · Incorporar archivos sueltos</h2>
   <div id="drop" tabindex="0">
-    <b>Arrastra aquí PDF, imágenes o correos guardados (.msg / .eml)</b> · pega una imagen con <b>Ctrl+V</b> · o haz clic para seleccionar
+    <b>Arrastra aquí PDF, imágenes, Word/Excel/PowerPoint o correos guardados (.msg / .eml)</b> · pega una imagen con <b>Ctrl+V</b> · o haz clic para seleccionar
     <small>PDF, JPG, PNG, TIFF, los correos deben estar guardados como archivo (no se pueden arrastrar directamente desde Outlook); se indexan también sus adjuntos PDF/imagen · se guarda una copia del original sin modificar en este navegador</small>
   </div>
-  <input id="file" type="file" multiple hidden accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.msg,.eml">
+  <input id="file" type="file" multiple hidden accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.msg,.eml,.docx,.xlsx,.pptx,.txt,.csv,.html,.htm,.rtf,.zip">
   <div id="upmsgs"></div>
 </section>
 
@@ -39,7 +39,7 @@
   <form id="sf" class="row">
     <input type="search" id="q" placeholder='Texto a buscar (usa "comillas" para una frase)'>
     <input type="search" id="asunto" placeholder="Asunto contiene…" style="min-width:150px;flex:0 1 170px"><input type="search" id="remitente" placeholder="Remitente contiene…" style="min-width:150px;flex:0 1 170px">
-    <select id="kind"><option value="">Todos los tipos</option><option value="pdf">PDF</option><option value="imagen">Imagen</option><option value="correo">Correo</option></select>
+    <select id="kind"><option value="">Todos los tipos</option><option value="pdf">PDF</option><option value="imagen">Imagen</option><option value="correo">Correo</option><option value="documento">Word/Excel/PowerPoint/texto</option></select>
     <input type="date" id="desde" title="Fecha del archivo o correo desde"><input type="date" id="hasta" title="Fecha del archivo o correo hasta">
     <button>Buscar</button>
   </form>
@@ -78,13 +78,21 @@
 </section>
 
 <section class="card">
-  <h2>Índice</h2>
+  <h2>Base de datos y copia en disco</h2>
+  <p class="m" style="margin-top:0">El índice vive en el navegador de <b>este equipo</b>. Para que no se pierda de un día para otro (limpieza de datos del sitio, otro perfil o ventana privada), elige una <b>carpeta de datos</b> en este ordenador (p. ej. <code>C:\FEEDBACK\datos</code>): se guarda sola una copia tras cada cambio y se restaura si hace falta. Usa siempre la misma URL y el mismo navegador.</p>
+  <div class="row">
+    <button id="dd-pick">Elegir carpeta de datos…</button>
+    <button id="dd-save" class="sec">Guardar copia completa ahora</button>
+    <button id="dd-restore" class="sec">Restaurar desde la carpeta</button>
+  </div>
+  <div id="datastatus" class="msg info" style="margin-top:8px"></div>
+  <h2 style="margin-top:16px">Exportar / importar índice (opcional)</h2>
   <div class="row">
     <button id="export" class="sec">Exportar índice (JSON)</button>
     <label class="btn sec">Importar índice…<input id="import" type="file" accept=".json" hidden></label>
-    <button id="wipe" class="sec danger">Vaciar índice de este navegador</button>
+    <button id="wipe" class="sec danger">Vaciar índice y copia en disco</button>
   </div>
-  <p class="m">El índice (texto extraído) vive en este navegador. Si se borran los datos del sitio, basta con volver a elegir la carpeta y reindexar. La exportación no incluye los originales.</p>
+  <p class="m">La exportación no incluye los originales importados.</p>
 </section>
 </main>
 
@@ -93,6 +101,7 @@
 <script src="vendor/minisearch.js"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
 <script src="vendor/email.js"></script>
+<script src="vendor/zip.js"></script>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

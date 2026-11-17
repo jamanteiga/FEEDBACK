@@ -1,12 +1,14 @@
 import { DB } from './db.js';
 import { sha256, processPdf, processImage } from './proc.js';
 import { buildReport } from './report.js';
+import { Store } from './store.js';
+import { DOC_EXT, LEGACY_EXT, extractDocument, zipEntries, htmlToText, FORMAT_NAME } from './extract.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fdate = s => s ? s.replace('T', ' ').slice(0, 16) : '';
 const PDF_EXT = ['pdf'], IMG_EXT = ['jpg', 'jpeg', 'png', 'tif', 'tiff'], MAIL_EXT = ['eml', 'msg'];
-const ALL_EXT = [...PDF_EXT, ...IMG_EXT, ...MAIL_EXT];
+const ALL_EXT = [...PDF_EXT, ...IMG_EXT, ...MAIL_EXT, ...DOC_EXT];
 const INLINE_MAX = 50 * 1024;   // imágenes pequeñas incrustadas (logos, firmas) no se indexan
 const LOW_CONF = 60;
 const extOf = n => (n.split('.').pop() || '').toLowerCase();
@@ -22,11 +24,12 @@ const docsById = new Map();
 const selected = new Set();   // documentos marcados para el informe
 let lastResultIds = [];
 
+const tokenize = t => t.split(/[^\p{L}\p{N}]+/u).filter(Boolean);   // separa por cualquier carácter que no sea letra o número (también tabuladores)
 function newMini() {
   mini = new MiniSearch({
     fields: ['text'], storeFields: ['docId', 'pageNo'], idField: 'id',
-    processTerm: t => normTerm(t) || null,
-    searchOptions: { prefix: t => t.length > 2, combineWith: 'AND', processTerm: t => normTerm(t) || null },
+    tokenize: tokenize, processTerm: t => normTerm(t) || null,
+    searchOptions: { prefix: t => t.length > 2, combineWith: 'AND', tokenize: tokenize, processTerm: t => normTerm(t) || null },
   });
 }
 const pid = (d, p) => `${d}:${p}`;
@@ -43,11 +46,6 @@ const setStatus = (t, cls = '') => { const e = $('#status'); e.className = 'msg 
 const addMsg = (cls, html) => { $('#upmsgs').insertAdjacentHTML('afterbegin', `<div class="msg ${cls}">${html}</div>`); };
 
 // ---- correos (.eml / .msg) ----
-const htmlToText = h => {
-  const d = new DOMParser().parseFromString(String(h).replace(/<(br|\/p|\/div|\/tr|\/li|\/h\d)\b[^>]*>/gi, '\n'), 'text/html');
-  d.querySelectorAll('style,script,head').forEach(n => n.remove());
-  return d.body.textContent.replace(/[ \t ]+/g, ' ').replace(/\n\s*\n\s*\n+/g, '\n\n').trim();
-};
 const addr = a => a ? (a.name && a.address ? `${a.name} <${a.address}>` : (a.address || a.name || '')) : '';
 async function parseEmail(ext, buf) {
   let r;
@@ -72,14 +70,14 @@ async function parseEmail(ext, buf) {
 const mailText = r => [`Asunto: ${r.subject}`, `De: ${r.from}`, `Para: ${r.to}`, r.cc ? `CC: ${r.cc}` : null, `Fecha: ${r.date ? r.date.replace('T', ' ').slice(0, 16) : ''}`, '', r.body].filter(x => x !== null).join('\n');
 
 // ---- ingesta ----
-async function ingest({ file, buf, key, path, source, via, fileDate, parent, rootId }) {
+async function ingest({ file, buf, key, path, source, via, fileDate, parent, rootId, depth = 0 }) {
   const name = file.name, ext = extOf(name);
   if (!ALL_EXT.includes(ext)) { await DB.addLog('error', name, `Formato no admitido: .${ext}`); return { status: 'error', msg: `Formato no admitido: .${ext}` }; }
   if (!buf.byteLength) { await DB.addLog('error', name, 'Archivo vacío'); return { status: 'error', msg: 'Archivo vacío' }; }
   const sha = await sha256(buf);
   const dups = await DB.byIndex('docs', 'sha', sha);
   const dup = dups.find(d => d.key !== key && d.status === 'ok');
-  const kind = PDF_EXT.includes(ext) ? 'pdf' : MAIL_EXT.includes(ext) ? 'correo' : 'imagen';
+  const kind = PDF_EXT.includes(ext) ? 'pdf' : MAIL_EXT.includes(ext) ? 'correo' : DOC_EXT.includes(ext) ? 'documento' : 'imagen';
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
   const doc = {
     sha256: sha, key, name, path: path || null, storedName: `${stamp}_${kind}_${sha.slice(0, 8)}.${ext}`,
@@ -102,27 +100,38 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent, roo
       Object.assign(doc, { subject: m.subject, sender: m.from, to: m.to, emailDate: m.date });
       pages = [{ pageNo: 1, method: 'correo', conf: null, text: mailText(m), steps: [{ step: 'extraccion_correo', detail: m.method }], processed: null }];
       mailAtts = m.atts;
+    } else if (kind === 'documento') {
+      const note = { step: 'extraccion_texto', detail: `${FORMAT_NAME[ext] || ext}: texto extraído directamente, sin convertir a PDF` };
+      if (ext === 'zip') {
+        const ents = zipEntries(buf);
+        pages = [{ pageNo: 1, label: '', method: 'documento', conf: null, text: 'Contenido del ZIP:\n' + ents.map(e => e.path).join('\n'), steps: [note], processed: null }];
+        mailAtts = ents.map(e => ({ name: e.name, mime: '', bytes: e.bytes, inline: false }));
+      } else pages = extractDocument(ext, buf).map(x => ({ pageNo: x.pageNo, label: x.label, method: 'documento', conf: null, text: x.text, steps: [note], processed: null }));
     } else pages = kind === 'pdf' ? await processPdf(buf, onP, onS) : await processImage(file, buf, onP, onS);
     let low = 0; const mini_docs = [];
     for (const p of pages) {
-      await DB.put('pages', { docId: doc.id, pageNo: p.pageNo, method: p.method, conf: p.conf, text: p.text, steps: p.steps });
+      await DB.put('pages', { docId: doc.id, pageNo: p.pageNo, label: p.label || '', method: p.method, conf: p.conf, text: p.text, steps: p.steps });
       if (p.processed) await DB.put('pimg', p.processed, [doc.id, p.pageNo]);
       mini_docs.push({ id: pid(doc.id, p.pageNo), docId: doc.id, pageNo: p.pageNo, text: p.text });
       if (p.conf != null && p.conf < LOW_CONF) low++;
     }
     mini.addAll(mini_docs);
     doc.pages = pages.length; await DB.put('docs', doc); docsById.set(doc.id, doc);
-    let msg = kind === 'correo' ? 'Correo indexado' : `Indexado (${pages.length} pág.)`;
+    let msg = kind === 'correo' ? 'Correo indexado' : kind === 'documento' ? `Indexado (${FORMAT_NAME[ext] || ext}, ${pages.length} ${pages.length === 1 ? 'parte' : 'partes'})` : `Indexado (${pages.length} pág.)`;
     if (low) msg += ` — ${low} pág. con OCR de baja confianza`;
-    if (kind === 'correo') {
+    if (kind === 'correo' || mailAtts.length) {
       doc.attachments = []; let nOk = 0, nSkip = 0, nInl = 0;
       for (const [i, a] of mailAtts.entries()) {
         const aext = extOf(a.name), entry = { name: a.name, size: a.bytes.byteLength, docId: null, note: '' };
-        if (![...PDF_EXT, ...IMG_EXT].includes(aext)) { entry.note = 'formato no indexable'; nSkip++; await DB.addLog('info', name, `Adjunto no indexado (${aext || 'sin extensión'}): ${a.name}`); }
+        if (depth >= 3) { entry.note = 'anidamiento excesivo (máx. 3 niveles)'; nSkip++; }
+        else if (!ALL_EXT.includes(aext)) {
+          entry.note = LEGACY_EXT.includes(aext) ? `formato antiguo .${aext}: guárdalo como .${aext}x o PDF para indexarlo` : 'formato no indexable'; nSkip++;
+          await DB.addLog('info', name, `Adjunto no indexado (${aext || 'sin extensión'}): ${a.name}`);
+        }
         else if (a.inline && IMG_EXT.includes(aext) && a.bytes.byteLength < INLINE_MAX) { entry.note = 'imagen incrustada pequeña (firma/logo)'; nInl++; }
         else {
           const ab = a.bytes.buffer.slice(a.bytes.byteOffset, a.bytes.byteOffset + a.bytes.byteLength);
-          const r = await ingest({ file: new File([ab], a.name, { type: a.mime }), buf: ab, key: `a:${doc.sha256}:${i}`, source: 'adjunto', via: `adjunto de #${doc.id}`, fileDate: doc.emailDate || doc.fileDate, parent: doc });
+          const r = await ingest({ file: new File([ab], a.name, { type: a.mime }), buf: ab, key: `a:${doc.sha256}:${i}`, source: 'adjunto', via: `adjunto de #${doc.id}`, fileDate: doc.emailDate || doc.fileDate, parent: doc, depth: depth + 1 });
           entry.note = r.status === 'ok' ? 'indexado' : r.msg; entry.docId = r.docId ?? null; if (r.status === 'ok') nOk++;
         }
         doc.attachments.push(entry);
@@ -175,12 +184,13 @@ async function saveRoots() {
 }
 function renderRoots() {
   $('#folders').innerHTML = roots.size ? [...roots.values()].map(r =>
-    `<span class="tag" style="font-size:13px;padding:3px 9px">📁 ${esc(r.name)} <a href="#" data-rmroot="${r.id}" title="Quitar carpeta y sus documentos del índice">✕</a></span>`).join(' ')
+    `<span class="tag${r.handle ? '' : ' warn'}" style="font-size:13px;padding:3px 9px">📁 ${esc(r.name)}${r.handle ? '' : ' (volver a elegir)'} <a href="#" data-rmroot="${r.id}" title="Quitar carpeta y sus documentos del índice">✕</a></span>`).join(' ')
     : '<span class="m">ninguna (elige una carpeta de documentos y/o una de correos)</span>';
   $('#scan').disabled = !roots.size;
 }
 async function addRoot(h, remember = true) {
-  for (const r of roots.values()) if (await r.handle.isSameEntry(h)) return r;   // ya añadida
+  for (const r of roots.values()) if (r.handle && await r.handle.isSameEntry(h)) return r;   // ya añadida
+  for (const r of roots.values()) if (!r.handle && r.name === h.name) { r.handle = h; renderRoots(); if (remember) await saveRoots(); return r; }   // carpeta restaurada desde la copia en disco
   const id = (Math.max(0, ...roots.keys()) || 0) + 1, r = { id, name: h.name, handle: h };
   roots.set(id, r); renderRoots(); if (remember) await saveRoots(); return r;
 }
@@ -200,6 +210,7 @@ async function scan(quiet = false) {   // quiet: pasada automática, sin mensaje
   if (busy) return quiet ? undefined : addMsg('error', 'Hay un proceso en marcha; espera a que termine.');
   const ok = [];
   for (const r of roots.values()) {
+    if (!r.handle) { if (!quiet) addMsg('duplicado', `La carpeta «${esc(r.name)}» no está enlazada en este equipo: vuelve a elegirla con «Añadir carpeta…».`); continue; }
     const granted = quiet ? (await r.handle.queryPermission({ mode: 'read' })) === 'granted' : await ensurePerm(r.handle);
     if (granted) ok.push(r); else if (!quiet) addMsg('error', `Sin permiso de lectura sobre «${esc(r.name)}».`);
   }
@@ -242,7 +253,7 @@ async function getFileOfDoc(d) {
     return b;
   }
   const r = roots.get(d.rootId);
-  if (!r) throw new Error('La carpeta de este documento no está añadida: vuelve a elegirla.');
+  if (!r || !r.handle) throw new Error('La carpeta de este documento no está enlazada: vuelve a elegirla con «Añadir carpeta…».');
   if (!(await ensurePerm(r.handle))) throw new Error('Sin permiso sobre la carpeta (pulsa de nuevo y acepta).');
   let h = r.handle;
   for (const seg of d.path.slice(0, -1)) h = await h.getDirectoryHandle(seg);
@@ -252,7 +263,7 @@ async function openOriginal(id, page) {
   const w = window.open('', '_blank');
   try {
     const d = docsById.get(id); let f = await getFileOfDoc(d);
-    if (d.kind === 'correo') {   // el navegador no muestra correos: se descarga el original para abrirlo en Outlook
+    if (d.kind === 'correo' || d.kind === 'documento') {   // el navegador no los muestra: se descarga el original para abrirlo con su programa
       w?.close(); const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = d.name; a.click(); return;
     }
     if (d.kind === 'pdf') f = new Blob([f], { type: 'application/pdf' });
@@ -307,10 +318,10 @@ async function runSearch() {
   $('#results').innerHTML = rows.length ? rows.map(({ d, p, snip }) => {
     const where = d.path ? [roots.get(d.rootId)?.name, ...d.path].filter(Boolean).join(' / ') : d.name, low = p.conf != null && p.conf < LOW_CONF, mail = d.kind === 'correo';
     const par = d.parentId ? docsById.get(d.parentId) : null;
-    return `<div class="res"><div class="t"><a href="#" ${mail ? 'data-detail' : 'data-open'}="${d.id}" data-page="${p.pageNo}">${esc(mail ? (d.subject || d.name) : d.name)}</a> <span class="m">· ${mail ? 'correo' : 'pág. ' + p.pageNo}</span></div>
+    return `<div class="res"><div class="t"><a href="#" ${mail ? 'data-detail' : 'data-open'}="${d.id}" data-page="${p.pageNo}">${esc(mail ? (d.subject || d.name) : d.name)}</a> <span class="m">· ${mail ? 'correo' : (p.label || 'pág. ' + p.pageNo)}</span></div>
       ${(mail || par) ? `<div class="m">${mail ? '' : 'Adjunto del correo «' + esc(par?.subject || '') + '» · '}De: ${esc(d.sender || '')}${mail ? ' · Para: ' + esc(d.to || '') : ''} · ${fdate(d.emailDate)}</div>` : ''}
       <div class="s">${snip}</div>
-      <div class="m"><span class="tag">${d.kind}</span><span class="tag">${p.method === 'ocr' ? 'OCR ' + Math.round(p.conf) + '%' : p.method === 'correo' ? 'cuerpo del correo' : 'texto nativo'}</span>
+      <div class="m"><span class="tag">${d.kind}</span><span class="tag">${p.method === 'ocr' ? 'OCR ' + Math.round(p.conf) + '%' : p.method === 'correo' ? 'cuerpo del correo' : p.method === 'documento' ? 'texto del documento' : 'texto nativo'}</span>
       ${low ? '<span class="tag warn">⚠ OCR de baja confianza: verificar contra el original</span>' : ''}
       ${esc(where)} · ${mail ? '<a href="#" data-open="' + d.id + '" data-page="1">abrir original (' + esc(d.name.split('.').pop()) + ')</a> · ' : 'archivo de ' + fdate(d.fileDate) + ' · '}<a href="#" data-detail="${d.id}" data-page="${p.pageNo}">ver texto extraído</a>
       ${d.kind === 'imagen' ? ` · <a href="#" data-proc="${d.id}" data-page="${p.pageNo}">versión procesada</a>` : ''}</div></div>`;
@@ -324,7 +335,7 @@ async function showDoc(id, page) {
   $('#detail').innerHTML = `<div><b>${esc(d.name)}</b> <span class="m">→ nombre asignado ${esc(d.storedName)} · SHA-256 ${esc(d.sha256.slice(0, 16))}…</span></div>
     ${d.kind === 'correo' ? `<div class="m"><b>Adjuntos:</b> ${(d.attachments || []).length ? d.attachments.map(a => (a.docId ? `<a href="#" data-detail="${a.docId}" data-page="1">${esc(a.name)}</a>` : esc(a.name)) + ' <span class="tag">' + esc(a.note) + '</span>').join(' · ') : 'ninguno'} · <a href="#" data-open="${d.id}" data-page="1">abrir original</a></div>` : ''}
     ${d.parentId && docsById.get(d.parentId) ? `<div class="m">Adjunto del correo <a href="#" data-detail="${d.parentId}" data-page="1">«${esc(docsById.get(d.parentId).subject)}»</a> · <a href="#" data-open="${d.id}" data-page="1">abrir adjunto</a></div>` : ''}
-    <div class="m">${d.kind === 'correo' ? 'Correo' : 'Página ' + pg.pageNo + ' de ' + d.pages} · ${pg.method === 'correo' ? 'texto extraído del correo' : pg.method === 'ocr' ? 'OCR (confianza media ' + Math.round(pg.conf) + '%)' : 'texto nativo del PDF'}</div>
+    <div class="m">${d.kind === 'correo' ? 'Correo' : (pg.label ? pg.label[0].toUpperCase() + pg.label.slice(1) : 'Página ' + pg.pageNo) + ' · parte ' + pg.pageNo + ' de ' + d.pages} · ${pg.method === 'correo' ? 'texto extraído del correo' : pg.method === 'documento' ? 'texto extraído del documento' : pg.method === 'ocr' ? 'OCR (confianza media ' + Math.round(pg.conf) + '%)' : 'texto nativo del PDF'}</div>
     <pre id="pagetext">${esc(pg.text) || '(sin texto)'}</pre>
     <div class="row"><button class="sec" id="markbtn" data-doc="${id}" data-page="${pg.pageNo}">★ Marcar selección como importante</button><span class="m">Selecciona un fragmento del texto y pulsa el botón: irá a la sección «Puntos marcados» del informe.</span></div>
     <div id="marks"></div>
@@ -450,19 +461,53 @@ $('#sf').onsubmit = e => { e.preventDefault(); runSearch(); };
 $('#export').onclick = exportIndex;
 $('#import').onchange = async e => { try { await importIndex(e.target.files[0]); } catch (err) { addMsg('error', esc(err.message)); } e.target.value = ''; };
 $('#wipe').onclick = async () => {
-  if (!confirm('Se borrará el índice y los archivos importados de este navegador. No se toca ninguna carpeta ni original. ¿Continuar?')) return;
+  if (!confirm('Se borrará el índice, las marcas y los archivos importados de este navegador y TAMBIÉN la copia en la carpeta de datos (si la hay). No se toca ninguna carpeta de documentos ni ningún original. ¿Continuar?')) return;
   await DB.wipe(); await loadIndex(); await refresh(); await runSearch();
 };
+
+// ---- base de datos en disco ----
+Store.getRoots = () => [...roots.values()].map(r => ({ id: r.id, name: r.name }));
+Store.setGhosts = async list => { for (const r of list) if (!roots.has(r.id)) roots.set(r.id, { id: r.id, name: r.name, handle: null }); renderRoots(); await saveRoots(); };
+Store.onStatus = t => { $('#datastatus').textContent = t; };
+async function afterRestore(n) {
+  await loadIndex(); renderRoots(); await refresh(); await runSearch();
+  addMsg('ok', `Copia restaurada desde la carpeta de datos: ${n} documentos. Las carpetas de documentos hay que volver a elegirlas con «Añadir carpeta…» (se reconocen por su nombre).`);
+}
+async function pickDataDir() {
+  if (!window.showDirectoryPicker) return addMsg('error', 'Este navegador no permite elegir carpetas. Usa Edge o Chrome.');
+  try {
+    if (!(await Store.pick())) return;
+    if (!(await Store.perm(true))) return addMsg('error', 'Sin permiso de escritura sobre la carpeta de datos.');
+    const has = await Store.hasData();
+    if (has && (!docsById.size || confirm('La carpeta ya contiene una copia de FEEDBACK.\n\nAceptar = CARGAR esa copia (sustituye el índice actual de este navegador).\nCancelar = CONSERVAR el índice actual y copiarlo a la carpeta (sustituye lo que hubiera allí).'))) await afterRestore(await Store.restore());
+    else { if (has) await Store.wipeDir(); await Store.snapshotAll(true); addMsg('ok', 'Copia en disco creada. A partir de ahora se guarda sola tras cada cambio.'); }
+  } catch (e) { addMsg('error', esc(e.message)); }
+}
+$('#dd-pick').onclick = pickDataDir;
+$('#dd-save').onclick = async () => { if (!Store.dir) return pickDataDir(); try { if (await Store.snapshotAll(true)) addMsg('ok', 'Copia completa guardada en la carpeta de datos.'); } catch (e) { addMsg('error', esc(e.message)); } };
+$('#dd-restore').onclick = async () => {
+  if (!Store.dir) return pickDataDir();
+  if (docsById.size && !confirm('Se sustituirá el índice actual del navegador por la copia de la carpeta de datos. ¿Continuar?')) return;
+  try { await afterRestore(await Store.restore()); } catch (e) { addMsg('error', esc(e.message)); }
+};
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') Store.flush().catch(() => {}); });
 
 // ---- arranque ----
 (async () => {
   await DB.open(); await loadIndex();
+  await Store.init(); DB.onChange = (...a) => Store.hook(...a);
   navigator.storage?.persist?.();
   if (!window.showDirectoryPicker) $('#nofs').hidden = false;
   let saved = await DB.get('meta', 'folders');
   if (!saved) { const old = await DB.get('meta', 'folder'); saved = old ? [{ id: 1, name: old.name, handle: old.handle }] : []; }
   for (const r of saved) roots.set(r.id, r);
   renderRoots();
-  window.__feedback = { addRoot: h => addRoot(h, false), scan, importFiles, ready: true };   // gancho para pruebas automáticas
+  if (!docsById.size && Store.dir) {   // el navegador ha perdido sus datos: restaurar desde la copia en disco si hay permiso
+    try {
+      if ((await Store.perm(false)) && (await Store.hasData())) await afterRestore(await Store.restore());
+      else if (await Store.hasData().catch(() => false)) Store.status('hay una copia: pulsa «Restaurar desde la carpeta»');
+    } catch { /* se mostrará el estado */ }
+  }
+  window.__feedback = { Store, setDataDir: h => { Store.dir = h; Store.status(); }, addRoot: h => addRoot(h, false), scan, importFiles, ready: true };   // gancho para pruebas automáticas
   await refresh(); await runSearch();
 })();
