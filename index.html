@@ -38,11 +38,12 @@
   <h2>3 · Buscar</h2>
   <form id="sf" class="row">
     <input type="search" id="q" placeholder='Texto a buscar (usa "comillas" para una frase)'>
-    <input type="search" id="asunto" placeholder="Asunto contiene…" style="min-width:150px;flex:0 1 170px"><input type="search" id="remitente" placeholder="Remitente contiene…" style="min-width:150px;flex:0 1 170px">
+    <input type="search" id="asunto" placeholder="Asunto contiene…" style="min-width:150px;flex:0 1 170px"><input type="search" id="etiqueta" placeholder="Título/etiqueta contiene…" style="min-width:150px;flex:0 1 170px"><input type="search" id="remitente" placeholder="Remitente contiene…" style="min-width:150px;flex:0 1 170px">
     <select id="kind"><option value="">Todos los tipos</option><option value="pdf">PDF</option><option value="imagen">Imagen</option><option value="correo">Correo</option><option value="documento">Word/Excel/PowerPoint/texto</option></select>
     <input type="date" id="desde" title="Fecha del archivo o correo desde"><input type="date" id="hasta" title="Fecha del archivo o correo hasta">
     <button>Buscar</button>
   </form>
+  <div class="row" style="margin:4px 0"><button type="button" id="export2" class="sec" title="Guarda en un .json todo el índice: documentos, texto extraído/corregido, etiquetas, notas y puntos marcados">💾 Guardar índice completo (.json)</button><span class="m">Contiene textos, etiquetas, notas y marcas (no los archivos originales). Se importa en otro equipo con «Importar índice…».</span></div>
   <div id="results"></div>
 </section>
 
@@ -66,7 +67,7 @@
 
 <section class="card" id="reportcard" hidden>
   <h2>Informe generado</h2>
-  <div class="row"><button id="rep-doc">Descargar (.doc para Word)</button><button id="rep-print" class="sec">Imprimir / guardar como PDF</button></div>
+  <div class="row"><button id="rep-docx">Descargar .docx (Word)</button><button id="rep-pdf">Descargar .pdf</button><button id="rep-xlsx">Descargar .xlsx (Excel)</button><button id="rep-print" class="sec">Imprimir</button></div>
   <iframe id="reportframe" style="width:100%;height:560px;border:1px solid var(--line);border-radius:6px;margin-top:10px;background:#fff"></iframe>
 </section>
 
@@ -88,7 +89,7 @@
   <div id="datastatus" class="msg info" style="margin-top:8px"></div>
   <h2 style="margin-top:16px">Exportar / importar índice (opcional)</h2>
   <div class="row">
-    <button id="export" class="sec">Exportar índice (JSON)</button>
+    <button id="export" class="sec">Guardar índice completo (.json)</button>
     <label class="btn sec">Importar índice…<input id="import" type="file" accept=".json" hidden></label>
     <button id="wipe" class="sec danger">Vaciar índice y copia en disco</button>
   </div>
@@ -102,6 +103,9 @@
 <script src="vendor/tesseract/tesseract.min.js"></script>
 <script src="vendor/email.js"></script>
 <script src="vendor/zip.js"></script>
+<script src="vendor/docx.js"></script>
+<script src="vendor/jspdf.js"></script>
+<script src="vendor/jspdf-autotable.js"></script>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

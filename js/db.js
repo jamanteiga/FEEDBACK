@@ -43,5 +43,12 @@ export const DB = {
     await this.del('docs', id);
     return pages.map(p => p.pageNo);
   },
+  async purgeContent(id) {   // deja el documento sin contenido (lápida); devuelve los números de página purgados
+    const pages = await this.byIndex('pages', 'docId', id);
+    for (const p of pages) { await this.del('pages', [id, p.pageNo]); await this.del('pimg', [id, p.pageNo]); }
+    for (const m of await this.byIndex('marks', 'docId', id)) await this.del('marks', m.id);
+    await this.del('blobs', id);
+    return pages.map(p => p.pageNo);
+  },
   async wipe() { for (const s of ['docs', 'pages', 'blobs', 'pimg', 'log', 'marks']) await this.clear(s); },
 };

@@ -45,45 +45,61 @@ const CSS = `body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#111
 h3{font-size:11.5pt;margin:12pt 0 3pt}table{border-collapse:collapse;width:100%;margin:4pt 0 8pt}td,th{border:.75pt solid #b8c0cc;padding:3pt 5pt;font-size:10pt;vertical-align:top;text-align:left}th{background:#e8eef8}
 .nota{background:#fff8e6;border:.75pt solid #e6c675;padding:6pt 8pt;font-size:10pt}.m{color:#555;font-size:9.5pt}.warn{color:#9a4a00}ul{margin:2pt 0 6pt 16pt;padding:0}li{margin:2pt 0}@media print{h2{page-break-after:avoid}}`;
 
-// docs: [{doc, pages, marks, parent}] en orden de presentación
-export function buildReport({ items, opts, scope, now = new Date(), rootName }) {
-  const when = now.toISOString().replace('T', ' ').slice(0, 16);
-  const toc = items.map((it, i) => `<li><a href="#d${i + 1}">${esc(it.doc.subject && it.doc.kind === 'correo' ? it.doc.subject + ' (' + it.doc.name + ')' : it.doc.name)}</a></li>`).join('');
+const NAME_OF = d => d.title ? `${d.title} (${d.name})` : (d.kind === 'correo' && d.subject ? `${d.subject} (${d.name})` : d.name);
+const locOf = (pages, n) => (pages.find(q => q.pageNo === n) || {}).label || 'pág. ' + n;
+const fmt = v => typeof v === 'number' ? 'pág. ' + v : v;
+const day = s => (s || '').replace('T', ' ').slice(0, 16);
+
+// Modelo neutro del informe: de aquí salen el HTML, el .docx, el .pdf y el .xlsx.
+export function buildModel({ items, opts, scope, now = new Date(), rootName }) {
   const all = [];
-  const sections = items.map((it, i) => {
+  const docs = items.map((it, i) => {
     const { doc: d, pages, marks, parent } = it, an = opts.auto ? analyze(pages) : { values: [], phrases: [] };
     const confs = pages.filter(p => p.conf != null).map(p => p.conf), avg = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null;
     const low = pages.filter(p => p.conf != null && p.conf < 60).map(p => p.pageNo);
+    const edited = pages.filter(p => p.edited).map(p => p.label || 'pág. ' + p.pageNo);
     const place = d.path ? [rootName(d.rootId), ...d.path].filter(Boolean).join(' / ') : (d.source === 'adjunto' ? 'adjunto de correo' : 'importado manualmente');
-    let h = `<h2 id="d${i + 1}">${i + 1}. ${esc(d.name)}</h2><table>
-      <tr><th style="width:22%">Tipo / origen</th><td>${esc(d.kind)} · ${esc(place)}</td></tr>
-      ${d.kind === 'correo' ? `<tr><th>Asunto</th><td>${esc(d.subject)}</td></tr><tr><th>De / Para</th><td>${esc(d.sender)} → ${esc(d.to)}</td></tr><tr><th>Fecha del correo</th><td>${esc((d.emailDate || '').replace('T', ' ').slice(0, 16))}</td></tr>`
-        : `<tr><th>Fecha del archivo</th><td>${esc((d.fileDate || '').replace('T', ' ').slice(0, 16))}</td></tr>`}
-      ${parent ? `<tr><th>Adjunto del correo</th><td>${esc(parent.subject)} (${esc(parent.sender)}, ${esc((parent.emailDate || '').slice(0, 10))})</td></tr>` : ''}
-      <tr><th>Páginas / identificación</th><td>${d.pages} · SHA-256 ${esc(d.sha256.slice(0, 16))}…</td></tr>
-      ${avg != null ? `<tr><th>Calidad de OCR</th><td>${Math.round(avg)} % de confianza media${low.length ? ` <span class="warn">· ⚠ baja confianza en pág. ${low.join(', ')}: verificar contra el original</span>` : ''}</td></tr>` : ''}</table>`;
-    h += `<h3>Puntos marcados por el usuario</h3>` + (marks.length
-      ? `<ul>${marks.map(m => `<li>«${esc(m.text)}» <span class="m">(${(pages.find(q => q.pageNo === m.pageNo) || {}).label || 'pág. ' + m.pageNo}${m.note ? ' · nota: ' + esc(m.note) : ''})</span></li>`).join('')}</ul>` : '<p class="m">Ninguno marcado.</p>');
-    if (opts.auto) {
-      const byCat = {}; for (const v of an.values) (byCat[v.cat] ||= []).push(v);
-      const cats = Object.keys(byCat);
+    const rows = [['Archivo', d.name], ['Tipo / origen', `${d.kind} · ${place}`]];
+    if (d.title) rows.push(['Título', d.title]);
+    if (d.tags) rows.push(['Etiquetas', d.tags]);
+    if (d.note) rows.push(['Nota', d.note]);
+    if (d.kind === 'correo') rows.push(['Asunto', d.subject || ''], ['De → Para', `${d.sender || ''} → ${d.to || ''}`], ['Fecha del correo', day(d.emailDate)]);
+    else rows.push(['Fecha del archivo', day(d.fileDate)]);
+    if (parent) rows.push(['Adjunto del correo', `${parent.subject || ''} (${parent.sender || ''}, ${(parent.emailDate || '').slice(0, 10)})`]);
+    rows.push(['Partes / identificación', `${d.pages} · SHA-256 ${d.sha256.slice(0, 16)}…`]);
+    if (avg != null) rows.push(['Calidad de OCR', `${Math.round(avg)} % de confianza media${low.length ? ` · ⚠ baja confianza en pág. ${low.join(', ')}: verificar contra el original` : ''}`]);
+    if (edited.length) rows.push(['Texto corregido manualmente', `${edited.join(', ')} (corrección del usuario sobre el texto extraído)`]);
+    const values = an.values.slice(0, 200).map(v => ({ cat: v.cat, value: v.value, ctx: v.ctx, loc: fmt(v.page) }));
+    for (const v of an.values) if (['Velocidades', 'Caudales', 'Presiones', 'Temperaturas', 'Requisitos acústicos', 'Normativa y referencias'].includes(v.cat))
+      all.push({ cat: v.cat, value: v.value, doc: d.title || d.name, loc: fmt(v.page), date: (d.emailDate || d.fileDate || '').slice(0, 10), n: i + 1 });
+    return { n: i + 1, name: d.name, title: NAME_OF(d), rows, marks: marks.map(m => ({ text: m.text, loc: locOf(pages, m.pageNo), note: m.note || '' })),
+      values, phrases: an.phrases.slice(0, 12).map(p => ({ ctx: p.ctx, loc: fmt(p.page) })) };
+  });
+  const cats = [...new Set(all.map(v => v.cat))];
+  return {
+    title: 'Informe resumen de documentación', when: now.toISOString().replace('T', ' ').slice(0, 16), scope, count: items.length, auto: !!opts.auto,
+    method: 'Informe generado por extracción literal de texto (sin inteligencia artificial). Los valores detectados automáticamente son propuestas pendientes de revisión humana, con su texto literal y ubicación de origen; pueden contener errores de OCR o ambigüedades. Los puntos marcados los ha seleccionado el usuario. Los textos corregidos manualmente se indican como tales. Este informe no sustituye al documento original ni resuelve contradicciones entre documentos.',
+    compareNote: 'Se muestran juntos los valores detectados en distintos documentos, con su fuente y fecha. No se determina cuál prevalece: la jerarquía documental la define el criterio del ingeniero y las reglas del proyecto.',
+    docs,
+    comparison: opts.auto && opts.compare ? cats.map(c => ({ cat: c, rows: all.filter(v => v.cat === c).sort((a, b) => a.value.localeCompare(b.value, 'es', { numeric: true })) })) : [],
+  };
+}
+
+export function renderHtml(m) {
+  const toc = m.docs.map(d => `<li><a href="#d${d.n}">${esc(d.title)}</a></li>`).join('');
+  const sections = m.docs.map(d => {
+    let h = `<h2 id="d${d.n}">${d.n}. ${esc(d.name)}</h2><table>${d.rows.map(([k, v]) => `<tr><th style="width:22%">${esc(k)}</th><td>${esc(v)}</td></tr>`).join('')}</table>`;
+    h += `<h3>Puntos marcados por el usuario</h3>` + (d.marks.length ? `<ul>${d.marks.map(x => `<li>«${esc(x.text)}» <span class="m">(${esc(x.loc)}${x.note ? ' · nota: ' + esc(x.note) : ''})</span></li>`).join('')}</ul>` : '<p class="m">Ninguno marcado.</p>');
+    if (m.auto) {
       h += `<h3>Valores y referencias detectados automáticamente <span class="m">(propuestos · pendientes de revisión)</span></h3>`;
-      h += cats.length ? `<table><tr><th>Categoría</th><th>Valor</th><th>Texto literal</th><th>Ubicación</th></tr>${cats.map(c => byCat[c].slice(0, 25).map(v => `<tr><td>${esc(c)}</td><td>${esc(v.value)}</td><td>${esc(v.ctx)}</td><td>${v.page}</td></tr>`).join('')).join('')}</table>` : '<p class="m">No se detectaron valores técnicos.</p>';
-      if (an.phrases.length) h += `<h3>Frases con carácter de requisito <span class="m">(extracto literal)</span></h3><ul>${an.phrases.slice(0, 12).map(p => `<li>${esc(p.ctx)} <span class="m">(${typeof p.page === 'number' ? 'pág. ' + p.page : p.page})</span></li>`).join('')}</ul>`;
-      for (const v of an.values) if (['Velocidades', 'Caudales', 'Presiones', 'Temperaturas', 'Requisitos acústicos', 'Normativa y referencias'].includes(v.cat))
-        all.push({ ...v, doc: d, date: (d.emailDate || d.fileDate || '').slice(0, 10), n: i + 1 });
+      h += d.values.length ? `<table><tr><th>Categoría</th><th>Valor</th><th>Texto literal</th><th>Ubicación</th></tr>${d.values.map(v => `<tr><td>${esc(v.cat)}</td><td>${esc(v.value)}</td><td>${esc(v.ctx)}</td><td>${esc(v.loc)}</td></tr>`).join('')}</table>` : '<p class="m">No se detectaron valores técnicos.</p>';
+      if (d.phrases.length) h += `<h3>Frases con carácter de requisito <span class="m">(extracto literal)</span></h3><ul>${d.phrases.map(p => `<li>${esc(p.ctx)} <span class="m">(${esc(p.loc)})</span></li>`).join('')}</ul>`;
     }
     return h;
   }).join('');
-
-  let cmp = '';
-  if (opts.auto && opts.compare && all.length) {
-    const cats = [...new Set(all.map(v => v.cat))];
-    cmp = `<h2>Cuadro comparativo de valores por categoría</h2><p class="nota">Se muestran juntos los valores detectados en distintos documentos, con su fuente y fecha. <b>No se determina cuál prevalece</b>: la jerarquía documental la define el criterio del ingeniero y las reglas del proyecto.</p>` +
-      cats.map(c => `<h3>${esc(c)}</h3><table><tr><th>Valor</th><th>Documento</th><th>Ubicación</th><th>Fecha</th></tr>${all.filter(v => v.cat === c).sort((a, b) => a.value.localeCompare(b.value, 'es', { numeric: true })).map(v => `<tr><td>${esc(v.value)}</td><td>${v.n}. ${esc(v.doc.name)}</td><td>${v.page}</td><td>${esc(v.date)}</td></tr>`).join('')}</table>`).join('');
-  }
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Informe resumen FEEDBACK</title><style>${CSS}</style></head><body>
-    <h1>Informe resumen de documentación</h1><p class="m">Generado el ${when} · Alcance: ${esc(scope)} · ${items.length} documento(s)</p>
-    <p class="nota"><b>Método:</b> informe generado por extracción literal de texto (sin inteligencia artificial). Los valores detectados automáticamente son <b>propuestas pendientes de revisión humana</b>, con su texto literal y página de origen; pueden contener errores de OCR o ambigüedades. Los puntos marcados los ha seleccionado el usuario. Este informe no sustituye al documento original ni resuelve contradicciones entre documentos.</p>
-    <h2>Índice</h2><ol>${toc}</ol>${sections}${cmp}</body></html>`;
+  const cmp = m.comparison.length ? `<h2>Cuadro comparativo de valores por categoría</h2><p class="nota"><b>${esc(m.compareNote.split(':')[0])}:</b>${esc(m.compareNote.split(':').slice(1).join(':'))}</p>` +
+    m.comparison.map(c => `<h3>${esc(c.cat)}</h3><table><tr><th>Valor</th><th>Documento</th><th>Ubicación</th><th>Fecha</th></tr>${c.rows.map(v => `<tr><td>${esc(v.value)}</td><td>${v.n}. ${esc(v.doc)}</td><td>${esc(v.loc)}</td><td>${esc(v.date)}</td></tr>`).join('')}</table>`).join('') : '';
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(m.title)}</title><style>${CSS}</style></head><body>
+    <h1>${esc(m.title)}</h1><p class="m">Generado el ${m.when} · Alcance: ${esc(m.scope)} · ${m.count} documento(s)</p>
+    <p class="nota"><b>Método:</b> ${esc(m.method)}</p><h2>Índice</h2><ol>${toc}</ol>${sections}${cmp}</body></html>`;
 }

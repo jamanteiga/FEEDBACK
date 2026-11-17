@@ -1,6 +1,7 @@
 import { DB } from './db.js';
 import { sha256, processPdf, processImage } from './proc.js';
-import { buildReport } from './report.js';
+import { buildModel, renderHtml } from './report.js';
+import { toDocx, toPdf, toXlsx, download, reportName } from './export.js';
 import { Store } from './store.js';
 import { DOC_EXT, LEGACY_EXT, extractDocument, zipEntries, htmlToText, FORMAT_NAME } from './extract.js';
 
@@ -70,7 +71,7 @@ async function parseEmail(ext, buf) {
 const mailText = r => [`Asunto: ${r.subject}`, `De: ${r.from}`, `Para: ${r.to}`, r.cc ? `CC: ${r.cc}` : null, `Fecha: ${r.date ? r.date.replace('T', ' ').slice(0, 16) : ''}`, '', r.body].filter(x => x !== null).join('\n');
 
 // ---- ingesta ----
-async function ingest({ file, buf, key, path, source, via, fileDate, parent, rootId, depth = 0 }) {
+async function ingest({ file, buf, key, path, source, via, fileDate, parent, rootId, depth = 0, keep }) {
   const name = file.name, ext = extOf(name);
   if (!ALL_EXT.includes(ext)) { await DB.addLog('error', name, `Formato no admitido: .${ext}`); return { status: 'error', msg: `Formato no admitido: .${ext}` }; }
   if (!buf.byteLength) { await DB.addLog('error', name, 'Archivo vacío'); return { status: 'error', msg: 'Archivo vacío' }; }
@@ -83,6 +84,7 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent, roo
     sha256: sha, key, name, path: path || null, storedName: `${stamp}_${kind}_${sha.slice(0, 8)}.${ext}`,
     kind, mime: file.type || '', source, via, size: buf.byteLength, fileDate, parentId: parent?.id ?? null, rootId: rootId ?? null,
     subject: parent?.subject ?? null, sender: parent?.sender ?? null, emailDate: parent?.emailDate ?? null, ingestedAt: new Date().toISOString(), pages: 0, status: 'ok',
+    ...(keep ? { title: keep.title, tags: keep.tags, note: keep.note } : {}),
   };
   if (dup) {
     doc.status = 'duplicado'; doc.error = `Duplicado exacto de #${dup.id} (${dup.path ? dup.path.join('/') : dup.name})`;
@@ -97,7 +99,7 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent, roo
     let pages, mailAtts = [];
     if (kind === 'correo') {
       const m = await parseEmail(ext, buf);
-      Object.assign(doc, { subject: m.subject, sender: m.from, to: m.to, emailDate: m.date });
+      Object.assign(doc, { subject: keep?.subject || m.subject, sender: keep?.sender || m.from, to: keep?.to || m.to, emailDate: keep?.emailDate || m.date });
       pages = [{ pageNo: 1, method: 'correo', conf: null, text: mailText(m), steps: [{ step: 'extraccion_correo', detail: m.method }], processed: null }];
       mailAtts = m.atts;
     } else if (kind === 'documento') {
@@ -151,6 +153,81 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent, roo
 async function removeDoc(id) {
   const nums = await DB.deleteDoc(id); docsById.delete(id);
   for (const n of nums) mini.discard(pid(id, n));
+}
+// ---- editar / eliminar / reindexar ----
+const children = id => [...docsById.values()].filter(c => c.parentId === id);
+const descendants = id => children(id).flatMap(c => [c.id, ...descendants(c.id)]);
+async function afterChange() {
+  await refresh(); await runSearch(); await refreshReport();
+  const dc = $('#detail').dataset.doc; if (dc && docsById.has(+dc) && !$('#detailcard').hidden) await showDoc(+dc, +$('#detail').dataset.page || 1); else if (dc) { $('#detailcard').hidden = true; $('#detail').dataset.doc = ''; }
+}
+async function excludeDoc(id) {
+  const d = docsById.get(id); if (!d) return;
+  const kids = descendants(id), n = kids.length;
+  if (!confirm(`¿Eliminar «${d.title || d.name}» del índice?${n ? `\n\nTambién se eliminarán sus ${n} adjunto(s) indexado(s).` : ''}\n\nNo se borra ningún archivo del disco. Dejará de aparecer en búsquedas e informes.${d.source === 'carpeta' ? '\nPodrás restaurarlo desde la tabla de documentos.' : '\nAl ser un archivo importado, se elimina también la copia guardada en este navegador.'}`)) return;
+  for (const k of kids) await removeDoc(k);
+  if (d.source === 'carpeta') {   // lápida: el reescaneo no lo vuelve a indexar mientras el archivo no cambie
+    for (const p of await DB.purgeContent(id)) mini.discard(pid(id, p));
+    if (Store.dir) await Store.removeDocFiles(id);
+    Object.assign(d, { status: 'excluido', pages: 0, attachments: [], error: 'Excluido del índice por el usuario' }); delete d.title; delete d.tags; delete d.note;
+    await DB.put('docs', d);
+  } else await removeDoc(id);
+  selected.delete(id); kids.forEach(k => selected.delete(k));
+  await DB.addLog('info', d.name, 'Eliminado del índice por el usuario'); await afterChange();
+}
+async function restoreDoc(id) {
+  const d = docsById.get(id); if (!d || d.status !== 'excluido') return;
+  await removeDoc(id); await refresh(); await scan();
+}
+async function reindexDoc(id) {
+  const d = docsById.get(id); if (!d) return;
+  if (d.parentId) return addMsg('error', 'Un adjunto se reindexa desde el correo o documento que lo contiene.');
+  if (busy) return addMsg('error', 'Hay un proceso en marcha; espera a que termine.');
+  let f; try { f = await getFileOfDoc(d); } catch (e) { return addMsg('error', esc(e.message)); }
+  if (!confirm(`¿Reindexar «${d.name}» desde el archivo original?\nSe descartan las correcciones manuales de texto; se conservan título, etiquetas, nota y puntos marcados.`)) return;
+  busy = true;
+  try {
+    const marks = await DB.byIndex('marks', 'docId', id), keep = { title: d.title, tags: d.tags, note: d.note, subject: d.edited?.subject ? d.subject : null, sender: d.edited?.sender ? d.sender : null, to: d.edited?.to ? d.to : null, emailDate: d.edited?.emailDate ? d.emailDate : null };
+    const buf = await f.arrayBuffer(), file = d.source === 'carpeta' ? f : new File([f], d.name, { type: f.type });
+    const info = { file, buf, key: d.key, path: d.path, source: d.source, via: d.via, fileDate: d.fileDate, rootId: d.rootId, keep };
+    for (const k of descendants(id)) await removeDoc(k);
+    await removeDoc(id);
+    const r = await ingest(info);
+    if (r.status === 'ok') {
+      const nd = docsById.get(r.docId); if (d.edited && nd) { nd.edited = d.edited; await DB.put('docs', nd); }
+      for (const m of marks) { const { id: _o, ...rest } = m; await DB.put('marks', { ...rest, docId: r.docId }); }
+      addMsg('ok', `<b>${esc(d.name)}</b> reindexado. ${esc(r.msg)}`);
+    } else addMsg(r.status, `<b>${esc(d.name)}</b> — ${esc(r.msg)}`);
+  } catch (e) { addMsg('error', 'Error al reindexar: ' + esc(e.message)); }
+  finally { busy = false; setStatus(''); await afterChange(); }
+}
+async function editMeta(id) {   // título, etiquetas, nota (y datos del correo) desde el formulario del detalle
+  const d = docsById.get(id), g = k => ($('#ed-' + k)?.value ?? '').trim();
+  d.title = g('title'); d.tags = g('tags'); d.note = g('note');
+  for (const k of ['title', 'tags', 'note']) if (!d[k]) delete d[k];
+  if (d.kind === 'correo') {
+    d.edited = { ...(d.edited || {}) };
+    for (const k of ['subject', 'sender', 'to']) if (g(k) !== (d[k] || '')) { d[k] = g(k); d.edited[k] = true; }
+    if (g('emailDate') && g('emailDate') !== (d.emailDate || '').slice(0, 16)) { d.emailDate = g('emailDate'); d.edited.emailDate = true; }
+    for (const c of descendants(id)) { const cd = docsById.get(c); Object.assign(cd, { subject: d.subject, sender: d.sender, emailDate: d.emailDate }); await DB.put('docs', cd); }
+  }
+  await DB.put('docs', d); await afterChange(); addMsg('ok', 'Datos del documento actualizados.');
+}
+async function savePageText(id, pageNo) {
+  const p = await DB.get('pages', [id, pageNo]), t = $('#ed-text').value;
+  if (t === p.text) return;
+  if (!p.origText) p.origText = p.text;
+  p.text = t; p.edited = true; await DB.put('pages', p);
+  try { mini.discard(pid(id, pageNo)); } catch { /* no estaba */ }
+  mini.add({ id: pid(id, pageNo), docId: id, pageNo, text: t });
+  await DB.addLog('info', docsById.get(id).name, `Texto de la parte ${pageNo} corregido manualmente`); await afterChange();
+}
+async function restorePageText(id, pageNo) {
+  const p = await DB.get('pages', [id, pageNo]); if (!p?.origText) return;
+  if (!confirm('¿Volver al texto extraído originalmente? Se perderá tu corrección.')) return;
+  p.text = p.origText; delete p.origText; delete p.edited; await DB.put('pages', p);
+  try { mini.discard(pid(id, pageNo)); } catch { /* */ }
+  mini.add({ id: pid(id, pageNo), docId: id, pageNo, text: p.text }); await afterChange();
 }
 
 async function importFiles(files, via) {
@@ -295,10 +372,10 @@ function snippet(text, terms) {
 }
 async function runSearch() {
   const q = $('#q').value.trim(), kind = $('#kind').value, desde = $('#desde').value, hasta = $('#hasta').value;
-  const asu = normTerm($('#asunto').value.trim()), rem = normTerm($('#remitente').value.trim());
+  const asu = normTerm($('#asunto').value.trim()), rem = normTerm($('#remitente').value.trim()), tag = normTerm($('#etiqueta').value.trim());
   const dd = d => (d.emailDate || d.fileDate).slice(0, 10);
   const okDoc = d => d && d.status === 'ok' && (!kind || d.kind === kind) && (!desde || dd(d) >= desde) && (!hasta || dd(d) <= hasta)
-    && (!asu || normTerm(d.subject || '').includes(asu)) && (!rem || normTerm(d.sender || '').includes(rem));
+    && (!asu || normTerm(d.subject || '').includes(asu)) && (!rem || normTerm(d.sender || '').includes(rem)) && (!tag || normTerm((d.tags || '') + ' ' + (d.title || '')).includes(tag));
   let rows = [];
   if (q) {
     const { words, phrases } = parseQuery(q);
@@ -318,12 +395,12 @@ async function runSearch() {
   $('#results').innerHTML = rows.length ? rows.map(({ d, p, snip }) => {
     const where = d.path ? [roots.get(d.rootId)?.name, ...d.path].filter(Boolean).join(' / ') : d.name, low = p.conf != null && p.conf < LOW_CONF, mail = d.kind === 'correo';
     const par = d.parentId ? docsById.get(d.parentId) : null;
-    return `<div class="res"><div class="t"><a href="#" ${mail ? 'data-detail' : 'data-open'}="${d.id}" data-page="${p.pageNo}">${esc(mail ? (d.subject || d.name) : d.name)}</a> <span class="m">· ${mail ? 'correo' : (p.label || 'pág. ' + p.pageNo)}</span></div>
+    return `<div class="res"><div class="t"><a href="#" ${mail ? 'data-detail' : 'data-open'}="${d.id}" data-page="${p.pageNo}">${esc(d.title || (mail ? (d.subject || d.name) : d.name))}</a> <span class="m">· ${mail ? 'correo' : (p.label || 'pág. ' + p.pageNo)}</span></div>
       ${(mail || par) ? `<div class="m">${mail ? '' : 'Adjunto del correo «' + esc(par?.subject || '') + '» · '}De: ${esc(d.sender || '')}${mail ? ' · Para: ' + esc(d.to || '') : ''} · ${fdate(d.emailDate)}</div>` : ''}
       <div class="s">${snip}</div>
       <div class="m"><span class="tag">${d.kind}</span><span class="tag">${p.method === 'ocr' ? 'OCR ' + Math.round(p.conf) + '%' : p.method === 'correo' ? 'cuerpo del correo' : p.method === 'documento' ? 'texto del documento' : 'texto nativo'}</span>
       ${low ? '<span class="tag warn">⚠ OCR de baja confianza: verificar contra el original</span>' : ''}
-      ${esc(where)} · ${mail ? '<a href="#" data-open="' + d.id + '" data-page="1">abrir original (' + esc(d.name.split('.').pop()) + ')</a> · ' : 'archivo de ' + fdate(d.fileDate) + ' · '}<a href="#" data-detail="${d.id}" data-page="${p.pageNo}">ver texto extraído</a>
+      ${esc(where)} · ${mail ? '<a href="#" data-open="' + d.id + '" data-page="1">abrir original (' + esc(d.name.split('.').pop()) + ')</a> · ' : 'archivo de ' + fdate(d.fileDate) + ' · '}<a href="#" data-detail="${d.id}" data-page="${p.pageNo}">ver / editar</a> · <a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>${p.edited ? ' <span class="tag warn">texto corregido</span>' : ''}${d.tags ? ' ' + d.tags.split(',').map(t => '<span class="tag">' + esc(t.trim()) + '</span>').join('') : ''}
       ${d.kind === 'imagen' ? ` · <a href="#" data-proc="${d.id}" data-page="${p.pageNo}">versión procesada</a>` : ''}</div></div>`;
   }).join('') : '<div class="empty">Sin resultados.</div>';
 }
@@ -331,14 +408,26 @@ async function runSearch() {
 async function showDoc(id, page) {
   const d = docsById.get(id), pages = (await DB.byIndex('pages', 'docId', id)).sort((a, b) => a.pageNo - b.pageNo);
   const pg = pages.find(p => p.pageNo === page) || pages[0]; if (!pg) return;
-  $('#detailcard').hidden = false;
-  $('#detail').innerHTML = `<div><b>${esc(d.name)}</b> <span class="m">→ nombre asignado ${esc(d.storedName)} · SHA-256 ${esc(d.sha256.slice(0, 16))}…</span></div>
+  $('#detailcard').hidden = false; $('#detail').dataset.doc = id; $('#detail').dataset.page = pg.pageNo;
+  $('#detail').innerHTML = `<div><b>${esc(d.title || d.name)}</b>${d.title ? ` <span class="m">(${esc(d.name)})</span>` : ''}${d.tags ? ' ' + d.tags.split(',').map(t => `<span class="tag">${esc(t.trim())}</span>`).join('') : ''} <span class="m">→ nombre asignado ${esc(d.storedName)} · SHA-256 ${esc(d.sha256.slice(0, 16))}…</span></div>
     ${d.kind === 'correo' ? `<div class="m"><b>Adjuntos:</b> ${(d.attachments || []).length ? d.attachments.map(a => (a.docId ? `<a href="#" data-detail="${a.docId}" data-page="1">${esc(a.name)}</a>` : esc(a.name)) + ' <span class="tag">' + esc(a.note) + '</span>').join(' · ') : 'ninguno'} · <a href="#" data-open="${d.id}" data-page="1">abrir original</a></div>` : ''}
     ${d.parentId && docsById.get(d.parentId) ? `<div class="m">Adjunto del correo <a href="#" data-detail="${d.parentId}" data-page="1">«${esc(docsById.get(d.parentId).subject)}»</a> · <a href="#" data-open="${d.id}" data-page="1">abrir adjunto</a></div>` : ''}
     <div class="m">${d.kind === 'correo' ? 'Correo' : (pg.label ? pg.label[0].toUpperCase() + pg.label.slice(1) : 'Página ' + pg.pageNo) + ' · parte ' + pg.pageNo + ' de ' + d.pages} · ${pg.method === 'correo' ? 'texto extraído del correo' : pg.method === 'documento' ? 'texto extraído del documento' : pg.method === 'ocr' ? 'OCR (confianza media ' + Math.round(pg.conf) + '%)' : 'texto nativo del PDF'}</div>
+    ${d.note ? `<div class="msg ok" style="background:#fffbea;border-color:#ecd98a">📝 ${esc(d.note)}</div>` : ''}
+    ${pg.edited ? '<div class="m"><span class="tag warn">texto corregido manualmente</span> <a href="#" data-restxt="1">volver al texto extraído originalmente</a></div>' : ''}
     <pre id="pagetext">${esc(pg.text) || '(sin texto)'}</pre>
     <div class="row"><button class="sec" id="markbtn" data-doc="${id}" data-page="${pg.pageNo}">★ Marcar selección como importante</button><span class="m">Selecciona un fragmento del texto y pulsa el botón: irá a la sección «Puntos marcados» del informe.</span></div>
     <div id="marks"></div>
+    <details style="margin-top:8px"><summary><b>✎ Editar este documento</b></summary>
+      <div class="row" style="margin-top:6px"><label class="m">Título visible <input id="ed-title" value="${esc(d.title || '')}" style="min-width:260px"></label><label class="m">Etiquetas (separadas por comas) <input id="ed-tags" value="${esc(d.tags || '')}" style="min-width:220px"></label></div>
+      <div class="row"><label class="m" style="flex:1">Nota <input id="ed-note" value="${esc(d.note || '')}" style="width:100%"></label></div>
+      ${d.kind === 'correo' ? `<div class="row"><label class="m">Asunto <input id="ed-subject" value="${esc(d.subject || '')}"></label><label class="m">De <input id="ed-sender" value="${esc(d.sender || '')}"></label><label class="m">Para <input id="ed-to" value="${esc(d.to || '')}"></label><label class="m">Fecha <input id="ed-emailDate" type="datetime-local" value="${esc((d.emailDate || '').slice(0, 16))}"></label></div>` : ''}
+      <div class="row"><button id="ed-savemeta" data-doc="${id}">Guardar datos</button></div>
+      <div class="m" style="margin-top:8px">Corregir el texto de esta parte (p. ej. errores de OCR). Se reindexa al guardar; se conserva el texto original por si quieres volver a él.</div>
+      <textarea id="ed-text" style="width:100%;min-height:160px;font-family:monospace">${esc(pg.text)}</textarea>
+      <div class="row"><button id="ed-savetext" data-doc="${id}" data-page="${pg.pageNo}">Guardar texto corregido</button></div>
+    </details>
+    <div class="row" style="margin-top:6px"><button class="sec" data-act="reindex" data-id="${id}">Reindexar desde el original</button><button class="sec" data-act="exclude" data-id="${id}">Eliminar del índice</button></div>
     <div class="m"><b>Transformaciones aplicadas:</b> ${pg.steps?.length ? pg.steps.map(s => esc(s.step) + ' (' + esc(s.detail) + ')').join(' · ') : 'ninguna (texto nativo)'}</div>
     <div style="margin-top:8px">${pages.map(p => `<a href="#" data-detail="${id}" data-page="${p.pageNo}">p.${p.pageNo}</a>`).join(' · ')}</div>`;
   await renderMarks(id);
@@ -360,9 +449,10 @@ async function addMark(docId, pageNo) {
 
 async function refresh() {
   const docs = [...docsById.values()].sort((a, b) => b.id - a.id);
-  $('#docs').innerHTML = docs.length ? `<table><tr><th></th><th>#</th><th>Archivo</th><th>Tipo</th><th>Origen</th><th>Págs</th><th>Indexado</th><th>Estado</th></tr>` +
-    docs.map(d => `<tr><td>${d.status === 'ok' ? `<input type="checkbox" data-sel="${d.id}" ${selected.has(d.id) ? 'checked' : ''}>` : ''}</td><td>${d.id}</td><td>${esc(d.path ? d.path.join('/') : d.name)}</td><td>${d.kind}</td><td>${esc(d.via)}</td><td>${d.pages}</td><td>${fdate(d.ingestedAt)}</td>
-    <td>${d.status === 'ok' ? `<a href="#" data-open="${d.id}" data-page="1">original</a>` : `<span class="tag warn">${d.status}</span>`}</td></tr>`).join('') + '</table>' : '<div class="empty">Aún no hay documentos.</div>';
+  $('#docs').innerHTML = docs.length ? `<table><tr><th></th><th>#</th><th>Archivo</th><th>Tipo</th><th>Origen</th><th>Págs</th><th>Indexado</th><th>Estado</th><th>Acciones</th></tr>` +
+    docs.map(d => `<tr><td>${d.status === 'ok' ? `<input type="checkbox" data-sel="${d.id}" ${selected.has(d.id) ? 'checked' : ''}>` : ''}</td><td>${d.id}</td><td>${esc(d.path ? d.path.join('/') : d.name)}${d.title ? `<div class="m">${esc(d.title)}</div>` : ''}</td><td>${d.kind}</td><td>${esc(d.via)}</td><td>${d.pages}</td><td>${fdate(d.ingestedAt)}</td>
+    <td>${d.status === 'ok' ? `<a href="#" data-open="${d.id}" data-page="1">original</a>` : `<span class="tag warn">${d.status}</span>`}</td>
+    <td>${d.status === 'ok' ? `<a href="#" data-detail="${d.id}" data-page="1">ver/editar</a>${d.parentId ? '' : ` · <a href="#" data-act="reindex" data-id="${d.id}">reindexar</a>`} · <a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>` : d.status === 'excluido' ? `<a href="#" data-act="restore" data-id="${d.id}">restaurar</a>` : `<a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>`}</td></tr>`).join('') + '</table>' : '<div class="empty">Aún no hay documentos.</div>';
   $('#rep-sel').textContent = `Informe de los seleccionados (${selected.size})`; $('#rep-sel').disabled = !selected.size;
   const bad = (await DB.all('log')).filter(l => l.level !== 'info').reverse().slice(0, 100);
   $('#log').innerHTML = bad.length ? bad.map(l => `<div class="msg ${l.level}"><b>${esc(l.filename)}</b> — ${esc(l.message)} <span class="m">(${fdate(l.at)})</span></div>`).join('') : '<div class="empty">Sin incidencias.</div>';
@@ -370,7 +460,7 @@ async function refresh() {
 
 // ---- exportar / importar índice ----
 async function exportIndex() {
-  const data = { app: 'feedback-web', version: 1, exportedAt: new Date().toISOString(), docs: await DB.all('docs'), pages: await DB.all('pages'), marks: await DB.all('marks') };
+  const data = { app: 'feedback-web', version: 2, exportedAt: new Date().toISOString(), docs: await DB.all('docs'), pages: await DB.all('pages'), marks: await DB.all('marks') };
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
   a.download = `feedback-indice-${new Date().toISOString().slice(0, 10)}.json`; a.click();
 }
@@ -391,8 +481,10 @@ async function importIndex(file) {
 
 // ---- eventos ----
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-detail],[data-proc],[data-rmroot],[data-markdel],[data-marknote]'); if (!t) return;
+  const t = e.target.closest('[data-open],[data-detail],[data-proc],[data-rmroot],[data-markdel],[data-marknote],[data-act],[data-restxt]'); if (!t) return;
   e.preventDefault();
+  if (t.dataset.act) { const id = +t.dataset.id; return t.dataset.act === 'exclude' ? excludeDoc(id) : t.dataset.act === 'reindex' ? reindexDoc(id) : restoreDoc(id); }
+  if (t.dataset.restxt) return restorePageText(+$('#detail').dataset.doc, +$('#detail').dataset.page);
   if (t.dataset.markdel) { const m = (+t.dataset.markdel); return DB.get('marks', m).then(async x => { await DB.del('marks', m); await renderMarks(x.docId); }); }
   if (t.dataset.marknote) { const m = +t.dataset.marknote; return DB.get('marks', m).then(async x => { const n = prompt('Nota para este punto (opcional):', x.note || ''); if (n === null) return; x.note = n.trim(); await DB.put('marks', x); await renderMarks(x.docId); }); }
   if (t.dataset.rmroot) return removeRoot(+t.dataset.rmroot);
@@ -415,14 +507,17 @@ document.addEventListener('paste', e => {
   importFiles(files.map((f, i) => (f.name && f.name !== 'image.png') ? f : new File([f], `pegado_${Date.now()}_${i}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type })), 'pegar');
 });
 document.addEventListener('change', e => { const c = e.target.closest('[data-sel]'); if (!c) return; c.checked ? selected.add(+c.dataset.sel) : selected.delete(+c.dataset.sel); const b = $('#rep-sel'); b.textContent = `Informe de los seleccionados (${selected.size})`; b.disabled = !selected.size; });
+document.addEventListener('click', e => { const b = e.target.closest('#ed-savemeta,#ed-savetext'); if (!b) return; b.id === 'ed-savemeta' ? editMeta(+b.dataset.doc) : savePageText(+b.dataset.doc, +b.dataset.page); });
 document.addEventListener('mousedown', e => { if (e.target.closest('#markbtn')) e.preventDefault(); });   // no perder la selección al pulsar
 document.addEventListener('click', e => { const b = e.target.closest('#markbtn'); if (b) addMark(+b.dataset.doc, +b.dataset.page); });
 
 // ---- informe resumen ----
-let reportHtml = '';
-async function makeReport(ids, scope) {
-  ids = ids.filter(id => docsById.get(id)?.status === 'ok');
-  if (!ids.length) return addMsg('error', 'No hay documentos indexados para el informe.');
+let reportModel = null, reportSpec = null;   // reportSpec: 'sel' | 'res' | 'all' (para regenerar tras editar/eliminar)
+const SPEC = { sel: ['documentos seleccionados', () => [...selected]], res: ['resultados de la búsqueda actual', () => lastResultIds], all: ['todos los documentos indexados', () => [...docsById.keys()]] };
+async function makeReport(spec, quiet) {
+  const [scope, get] = SPEC[spec]; reportSpec = spec;
+  const ids = get().filter(id => docsById.get(id)?.status === 'ok');
+  if (!ids.length) { $('#reportcard').hidden = true; reportModel = null; return quiet ? null : addMsg('error', 'No hay documentos indexados para el informe.'); }
   ids.sort((a, b) => ((docsById.get(a).parentId ?? a) - (docsById.get(b).parentId ?? b)) || a - b);   // cada correo seguido de sus adjuntos
   const items = [];
   for (const id of ids) {
@@ -431,17 +526,17 @@ async function makeReport(ids, scope) {
       pages: (await DB.byIndex('pages', 'docId', id)).sort((a, b) => a.pageNo - b.pageNo),
       marks: (await DB.byIndex('marks', 'docId', id)).sort((a, b) => a.pageNo - b.pageNo || a.id - b.id) });
   }
-  reportHtml = buildReport({ items, scope, opts: { auto: $('#rep-auto').checked, compare: $('#rep-cmp').checked }, rootName: id => roots.get(id)?.name });
-  $('#reportcard').hidden = false; $('#reportframe').srcdoc = reportHtml;
-  $('#reportcard').scrollIntoView({ behavior: 'smooth' });
+  reportModel = buildModel({ items, scope, opts: { auto: $('#rep-auto').checked, compare: $('#rep-cmp').checked }, rootName: id => roots.get(id)?.name });
+  $('#reportcard').hidden = false; $('#reportframe').srcdoc = renderHtml(reportModel);
+  if (!quiet) $('#reportcard').scrollIntoView({ behavior: 'smooth' });
 }
-$('#rep-sel').onclick = () => makeReport([...selected], 'documentos seleccionados');
-$('#rep-res').onclick = () => makeReport(lastResultIds, 'resultados de la búsqueda actual');
-$('#rep-all').onclick = () => makeReport([...docsById.keys()], 'todos los documentos indexados');
-$('#rep-doc').onclick = () => {
-  const a = document.createElement('a'); a.download = `informe-feedback-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}.doc`;
-  a.href = URL.createObjectURL(new Blob(['\ufeff', reportHtml], { type: 'application/msword' })); a.click();
-};
+const refreshReport = () => reportSpec && !$('#reportcard').hidden ? makeReport(reportSpec, true) : null;
+$('#rep-sel').onclick = () => makeReport('sel');
+$('#rep-res').onclick = () => makeReport('res');
+$('#rep-all').onclick = () => makeReport('all');
+const exporter = (id, ext, fn) => { $('#' + id).onclick = async () => { if (!reportModel) return; const b = $('#' + id); b.disabled = true;
+  try { download(await fn(reportModel), reportName(ext)); } catch (e) { addMsg('error', `No se pudo generar el .${ext}: ${e.message}`); } b.disabled = false; } };
+exporter('rep-docx', 'docx', toDocx); exporter('rep-pdf', 'pdf', toPdf); exporter('rep-xlsx', 'xlsx', toXlsx);
 $('#rep-print').onclick = () => { const w = $('#reportframe').contentWindow; w.focus(); w.print(); };
 
 $('#pick').onclick = pickFolder;
@@ -458,7 +553,7 @@ try { const a = JSON.parse(localStorage.getItem('fb-auto') || 'null'); if (a) { 
 setAuto();
 $('#cancel').onclick = () => { cancel = true; };
 $('#sf').onsubmit = e => { e.preventDefault(); runSearch(); };
-$('#export').onclick = exportIndex;
+$('#export').onclick = exportIndex; $('#export2').onclick = exportIndex;
 $('#import').onchange = async e => { try { await importIndex(e.target.files[0]); } catch (err) { addMsg('error', esc(err.message)); } e.target.value = ''; };
 $('#wipe').onclick = async () => {
   if (!confirm('Se borrará el índice, las marcas y los archivos importados de este navegador y TAMBIÉN la copia en la carpeta de datos (si la hay). No se toca ninguna carpeta de documentos ni ningún original. ¿Continuar?')) return;

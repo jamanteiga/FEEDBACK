@@ -65,3 +65,12 @@ Prueba en local (opcional): `python -m http.server 8000` en esta carpeta y abrir
 - Un TIFF no se visualiza en el navegador: se ofrece la versión procesada.
 - Si se borran los datos del sitio, se pierde el índice (no los originales de la carpeta): reindexar.
 - Sin clasificación técnica, IA, Outlook, Graph/SharePoint (fases 4-6).
+
+## Informes en .docx, .pdf y .xlsx
+En «4. Informe resumen» elige el alcance (seleccionados / resultados de la búsqueda / todos) y descarga: **.docx** (Word), **.pdf**, **.xlsx** (hojas: Resumen, Puntos marcados, Valores detectados, Frases requisito, Comparativo, Método). Se generan en el navegador, sin IA ni servicios externos. El PDF usa fuente estándar: caracteres fuera de Latin-1 pueden sustituirse por «?».
+
+## Índice completo en .json
+Botón «💾 Guardar índice completo (.json)» (encima de los resultados y en «Base de datos y copia en disco»). Contiene documentos, texto extraído/corregido, etiquetas, notas y puntos marcados; no los archivos originales. «Importar índice…» lo carga en otro equipo. Además, la carpeta de datos guarda una copia automática por documento.
+
+## Editar, eliminar y reindexar
+En el detalle de un documento («ver / editar»): título, etiquetas, nota, datos del correo y **corrección del texto** de cada parte (p. ej. errores de OCR; se conserva el original y puede restaurarse). **Eliminar del índice** quita el documento y sus adjuntos de búsquedas e informes sin borrar ningún archivo del disco; los de carpeta quedan como «excluido» y se pueden **restaurar**. **Reindexar** vuelve a leer el original (se conservan título, etiquetas, nota y marcas; se pierden las correcciones de texto). Tras cada cambio se refrescan la búsqueda y el informe abierto. Nuevo filtro «Título/etiqueta contiene…».
