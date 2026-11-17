@@ -25,6 +25,13 @@ Prueba en local (opcional): `python -m http.server 8000` en esta carpeta y abrir
 - Un adjunto idéntico a un documento ya indexado se registra como duplicado y no se vuelve a indexar (el correo enlaza al documento existente).
 - Si Outlook (p. ej. el "nuevo Outlook" o la versión web) no entrega ningún archivo al arrastrar, guarda el correo como `.msg`/`.eml` o PDF y arrástralo.
 
+## Informe resumen
+- En el detalle de un documento, selecciona un fragmento del texto y pulsa **★ Marcar selección como importante** (admite nota). Los puntos marcados se guardan con su página.
+- Sección **4 · Informe resumen**: elige documentos con las casillas de la tabla (o usa los resultados de la búsqueda, o todos) y genera el informe. Se previsualiza en pantalla y se descarga como **.doc (Word)** o se imprime/guarda como **PDF**.
+- Contenido por documento: datos de identificación (tipo, origen, fecha, asunto/remitente si es correo, calidad de OCR), **puntos marcados** y, opcionalmente, **valores y referencias detectados automáticamente** (velocidades, caudales, presiones, temperaturas, espesores, acústica, normativa, materiales, aislamiento, seguridad, montaje) con texto literal y página, más frases con carácter de requisito.
+- Opcional: **cuadro comparativo** que junta los valores de distintos documentos con su fuente y fecha, **sin decidir cuál prevalece**.
+- Es extracción literal, sin IA: los valores automáticos son propuestas a revisar y pueden contener errores de OCR.
+
 ## Qué hace con cada archivo
 - PDF: texto nativo por página; si hay <20 caracteres, rasteriza a 300 dpi y aplica OCR (spa+eng).
 - Imágenes (JPG, PNG, TIFF multipágina): gris, contraste, reescalado si es pequeña y enderezado; cada paso se registra y se ve en el detalle.

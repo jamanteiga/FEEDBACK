@@ -1,5 +1,6 @@
 import { DB } from './db.js';
 import { sha256, processPdf, processImage } from './proc.js';
+import { buildReport } from './report.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -18,6 +19,8 @@ const normTerm = t => t.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 let mini, cancel = false, busy = false;
 const roots = new Map();   // rootId -> { id, name, handle }
 const docsById = new Map();
+const selected = new Set();   // documentos marcados para el informe
+let lastResultIds = [];
 
 function newMini() {
   mini = new MiniSearch({
@@ -295,6 +298,7 @@ async function runSearch() {
       const p = await DB.get('pages', [d.id, 1]); rows.push({ d, p, snip: esc((p?.text || '').slice(0, 160)) });
     }
   }
+  lastResultIds = [...new Set(rows.map(r => r.d.id))];
   $('#results').innerHTML = rows.length ? rows.map(({ d, p, snip }) => {
     const where = d.path ? [roots.get(d.rootId)?.name, ...d.path].filter(Boolean).join(' / ') : d.name, low = p.conf != null && p.conf < LOW_CONF, mail = d.kind === 'correo';
     const par = d.parentId ? docsById.get(d.parentId) : null;
@@ -316,24 +320,41 @@ async function showDoc(id, page) {
     ${d.kind === 'correo' ? `<div class="m"><b>Adjuntos:</b> ${(d.attachments || []).length ? d.attachments.map(a => (a.docId ? `<a href="#" data-detail="${a.docId}" data-page="1">${esc(a.name)}</a>` : esc(a.name)) + ' <span class="tag">' + esc(a.note) + '</span>').join(' · ') : 'ninguno'} · <a href="#" data-open="${d.id}" data-page="1">abrir original</a></div>` : ''}
     ${d.parentId && docsById.get(d.parentId) ? `<div class="m">Adjunto del correo <a href="#" data-detail="${d.parentId}" data-page="1">«${esc(docsById.get(d.parentId).subject)}»</a> · <a href="#" data-open="${d.id}" data-page="1">abrir adjunto</a></div>` : ''}
     <div class="m">${d.kind === 'correo' ? 'Correo' : 'Página ' + pg.pageNo + ' de ' + d.pages} · ${pg.method === 'correo' ? 'texto extraído del correo' : pg.method === 'ocr' ? 'OCR (confianza media ' + Math.round(pg.conf) + '%)' : 'texto nativo del PDF'}</div>
-    <pre>${esc(pg.text) || '(sin texto)'}</pre>
+    <pre id="pagetext">${esc(pg.text) || '(sin texto)'}</pre>
+    <div class="row"><button class="sec" id="markbtn" data-doc="${id}" data-page="${pg.pageNo}">★ Marcar selección como importante</button><span class="m">Selecciona un fragmento del texto y pulsa el botón: irá a la sección «Puntos marcados» del informe.</span></div>
+    <div id="marks"></div>
     <div class="m"><b>Transformaciones aplicadas:</b> ${pg.steps?.length ? pg.steps.map(s => esc(s.step) + ' (' + esc(s.detail) + ')').join(' · ') : 'ninguna (texto nativo)'}</div>
     <div style="margin-top:8px">${pages.map(p => `<a href="#" data-detail="${id}" data-page="${p.pageNo}">p.${p.pageNo}</a>`).join(' · ')}</div>`;
+  await renderMarks(id);
   $('#detailcard').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function renderMarks(docId) {
+  const ms = (await DB.byIndex('marks', 'docId', docId)).sort((a, b) => a.pageNo - b.pageNo || a.id - b.id), el = $('#marks'); if (!el) return;
+  el.innerHTML = ms.length ? `<div class="m" style="margin-top:8px"><b>★ Puntos marcados (${ms.length})</b></div>` + ms.map(m =>
+    `<div class="msg ok" style="background:#fffbea;border-color:#ecd98a">«${esc(m.text.length > 260 ? m.text.slice(0, 257) + '…' : m.text)}» <span class="m">(pág. ${m.pageNo}${m.note ? ' · nota: ' + esc(m.note) : ''})</span>
+     <a href="#" data-marknote="${m.id}" title="Añadir o editar nota">✎</a> <a href="#" data-markdel="${m.id}" title="Quitar">✕</a></div>`).join('') : '';
+}
+async function addMark(docId, pageNo) {
+  const pre = $('#pagetext'), sel = getSelection(), text = sel?.toString().replace(/\s+/g, ' ').trim();
+  if (!text || !sel.rangeCount || !pre.contains(sel.anchorNode)) return addMsg('error', 'Selecciona primero un fragmento dentro del texto extraído.');
+  await DB.put('marks', { docId, pageNo, text: text.slice(0, 1000), note: '', at: new Date().toISOString() });
+  sel.removeAllRanges(); await renderMarks(docId);
 }
 
 async function refresh() {
   const docs = [...docsById.values()].sort((a, b) => b.id - a.id);
-  $('#docs').innerHTML = docs.length ? `<table><tr><th>#</th><th>Archivo</th><th>Tipo</th><th>Origen</th><th>Págs</th><th>Indexado</th><th>Estado</th></tr>` +
-    docs.map(d => `<tr><td>${d.id}</td><td>${esc(d.path ? d.path.join('/') : d.name)}</td><td>${d.kind}</td><td>${esc(d.via)}</td><td>${d.pages}</td><td>${fdate(d.ingestedAt)}</td>
+  $('#docs').innerHTML = docs.length ? `<table><tr><th></th><th>#</th><th>Archivo</th><th>Tipo</th><th>Origen</th><th>Págs</th><th>Indexado</th><th>Estado</th></tr>` +
+    docs.map(d => `<tr><td>${d.status === 'ok' ? `<input type="checkbox" data-sel="${d.id}" ${selected.has(d.id) ? 'checked' : ''}>` : ''}</td><td>${d.id}</td><td>${esc(d.path ? d.path.join('/') : d.name)}</td><td>${d.kind}</td><td>${esc(d.via)}</td><td>${d.pages}</td><td>${fdate(d.ingestedAt)}</td>
     <td>${d.status === 'ok' ? `<a href="#" data-open="${d.id}" data-page="1">original</a>` : `<span class="tag warn">${d.status}</span>`}</td></tr>`).join('') + '</table>' : '<div class="empty">Aún no hay documentos.</div>';
+  $('#rep-sel').textContent = `Informe de los seleccionados (${selected.size})`; $('#rep-sel').disabled = !selected.size;
   const bad = (await DB.all('log')).filter(l => l.level !== 'info').reverse().slice(0, 100);
   $('#log').innerHTML = bad.length ? bad.map(l => `<div class="msg ${l.level}"><b>${esc(l.filename)}</b> — ${esc(l.message)} <span class="m">(${fdate(l.at)})</span></div>`).join('') : '<div class="empty">Sin incidencias.</div>';
 }
 
 // ---- exportar / importar índice ----
 async function exportIndex() {
-  const data = { app: 'feedback-web', version: 1, exportedAt: new Date().toISOString(), docs: await DB.all('docs'), pages: await DB.all('pages') };
+  const data = { app: 'feedback-web', version: 1, exportedAt: new Date().toISOString(), docs: await DB.all('docs'), pages: await DB.all('pages'), marks: await DB.all('marks') };
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
   a.download = `feedback-indice-${new Date().toISOString().slice(0, 10)}.json`; a.click();
 }
@@ -347,14 +368,17 @@ async function importIndex(file) {
     map.set(old, await DB.put('docs', d)); added++;
   }
   for (const p of data.pages) if (map.has(p.docId)) await DB.put('pages', { ...p, docId: map.get(p.docId) });
+  for (const m of data.marks || []) if (map.has(m.docId)) { delete m.id; await DB.put('marks', { ...m, docId: map.get(m.docId) }); }
   await loadIndex(); await refresh(); await runSearch();
   addMsg('ok', `Índice importado: ${added} documentos añadidos, ${skipped} omitidos. Los archivos de carpeta se abren al elegir la misma carpeta; los importados por arrastrar/pegar no incluyen el original.`);
 }
 
 // ---- eventos ----
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-detail],[data-proc],[data-rmroot]'); if (!t) return;
+  const t = e.target.closest('[data-open],[data-detail],[data-proc],[data-rmroot],[data-markdel],[data-marknote]'); if (!t) return;
   e.preventDefault();
+  if (t.dataset.markdel) { const m = (+t.dataset.markdel); return DB.get('marks', m).then(async x => { await DB.del('marks', m); await renderMarks(x.docId); }); }
+  if (t.dataset.marknote) { const m = +t.dataset.marknote; return DB.get('marks', m).then(async x => { const n = prompt('Nota para este punto (opcional):', x.note || ''); if (n === null) return; x.note = n.trim(); await DB.put('marks', x); await renderMarks(x.docId); }); }
   if (t.dataset.rmroot) return removeRoot(+t.dataset.rmroot);
   if (t.dataset.open) openOriginal(+t.dataset.open, +t.dataset.page);
   else if (t.dataset.detail) showDoc(+t.dataset.detail, +t.dataset.page);
@@ -374,6 +398,36 @@ document.addEventListener('paste', e => {
   const files = [...(e.clipboardData?.files || [])]; if (!files.length) return; e.preventDefault();
   importFiles(files.map((f, i) => (f.name && f.name !== 'image.png') ? f : new File([f], `pegado_${Date.now()}_${i}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type })), 'pegar');
 });
+document.addEventListener('change', e => { const c = e.target.closest('[data-sel]'); if (!c) return; c.checked ? selected.add(+c.dataset.sel) : selected.delete(+c.dataset.sel); const b = $('#rep-sel'); b.textContent = `Informe de los seleccionados (${selected.size})`; b.disabled = !selected.size; });
+document.addEventListener('mousedown', e => { if (e.target.closest('#markbtn')) e.preventDefault(); });   // no perder la selección al pulsar
+document.addEventListener('click', e => { const b = e.target.closest('#markbtn'); if (b) addMark(+b.dataset.doc, +b.dataset.page); });
+
+// ---- informe resumen ----
+let reportHtml = '';
+async function makeReport(ids, scope) {
+  ids = ids.filter(id => docsById.get(id)?.status === 'ok');
+  if (!ids.length) return addMsg('error', 'No hay documentos indexados para el informe.');
+  ids.sort((a, b) => ((docsById.get(a).parentId ?? a) - (docsById.get(b).parentId ?? b)) || a - b);   // cada correo seguido de sus adjuntos
+  const items = [];
+  for (const id of ids) {
+    const doc = docsById.get(id);
+    items.push({ doc, parent: doc.parentId ? docsById.get(doc.parentId) : null,
+      pages: (await DB.byIndex('pages', 'docId', id)).sort((a, b) => a.pageNo - b.pageNo),
+      marks: (await DB.byIndex('marks', 'docId', id)).sort((a, b) => a.pageNo - b.pageNo || a.id - b.id) });
+  }
+  reportHtml = buildReport({ items, scope, opts: { auto: $('#rep-auto').checked, compare: $('#rep-cmp').checked }, rootName: id => roots.get(id)?.name });
+  $('#reportcard').hidden = false; $('#reportframe').srcdoc = reportHtml;
+  $('#reportcard').scrollIntoView({ behavior: 'smooth' });
+}
+$('#rep-sel').onclick = () => makeReport([...selected], 'documentos seleccionados');
+$('#rep-res').onclick = () => makeReport(lastResultIds, 'resultados de la búsqueda actual');
+$('#rep-all').onclick = () => makeReport([...docsById.keys()], 'todos los documentos indexados');
+$('#rep-doc').onclick = () => {
+  const a = document.createElement('a'); a.download = `informe-feedback-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}.doc`;
+  a.href = URL.createObjectURL(new Blob(['\ufeff', reportHtml], { type: 'application/msword' })); a.click();
+};
+$('#rep-print').onclick = () => { const w = $('#reportframe').contentWindow; w.focus(); w.print(); };
+
 $('#pick').onclick = pickFolder;
 $('#scan').onclick = scan;
 $('#cancel').onclick = () => { cancel = true; };

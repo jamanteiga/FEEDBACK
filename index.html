@@ -50,6 +50,26 @@
 </section>
 
 <section class="card">
+  <h2>4 · Informe resumen</h2>
+  <p class="m" style="margin-top:0">Genera un documento con los puntos de cada archivo: los que hayas <b>marcado</b> (★ en el detalle de un documento) y, opcionalmente, valores técnicos y referencias <b>detectados automáticamente</b> (texto literal con su página; sin IA; propuestos para tu revisión). Marca las casillas de la tabla de abajo para elegir documentos.</p>
+  <div class="row">
+    <label><input type="checkbox" id="rep-auto" checked> Incluir valores detectados automáticamente</label>
+    <label><input type="checkbox" id="rep-cmp" checked> Incluir cuadro comparativo</label>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="rep-sel" disabled>Informe de los seleccionados (0)</button>
+    <button id="rep-res" class="sec">Informe de los resultados de la búsqueda</button>
+    <button id="rep-all" class="sec">Informe de todos</button>
+  </div>
+</section>
+
+<section class="card" id="reportcard" hidden>
+  <h2>Informe generado</h2>
+  <div class="row"><button id="rep-doc">Descargar (.doc para Word)</button><button id="rep-print" class="sec">Imprimir / guardar como PDF</button></div>
+  <iframe id="reportframe" style="width:100%;height:560px;border:1px solid var(--line);border-radius:6px;margin-top:10px;background:#fff"></iframe>
+</section>
+
+<section class="card">
   <h2>Documentos y registro</h2>
   <div id="docs"></div>
   <h2 style="margin-top:16px">Registro de errores y duplicados</h2>
