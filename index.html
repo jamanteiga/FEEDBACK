@@ -5,10 +5,15 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FEEDBACK</title>
 <link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1c2430">
+<link rel="icon" href="icon-192.png">
 </head>
 <body>
-<header><h1>FEEDBACK</h1><span>Documentación técnica · versión navegador v0.2 · todo se procesa y guarda en este equipo</span></header>
+<header><h1>FEEDBACK</h1><span>Documentación técnica · todo se procesa y guarda en este equipo</span><div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><select id="proj" title="Proyecto activo"></select><button id="projnew" class="sec" title="Nuevo proyecto">＋</button><input id="user" placeholder="Usuario / equipo" title="Se anota en el registro de cambios" style="width:140px"><button id="theme" class="sec" title="Modo claro/oscuro">🌙</button></div></header>
 <main>
+
+<section class="card" id="dash"></section>
 
 <section class="card">
   <h2>1 · Carpetas de documentos y correos</h2>
@@ -43,6 +48,8 @@
     <input type="date" id="desde" title="Fecha del archivo o correo desde"><input type="date" id="hasta" title="Fecha del archivo o correo hasta">
     <button>Buscar</button>
   </form>
+  <div class="row" style="margin:4px 0"><select id="ss" title="Búsquedas guardadas (indica los documentos nuevos desde la última vez)"><option value="">Búsquedas guardadas…</option></select><button type="button" id="ss-save" class="sec">Guardar esta búsqueda</button><button type="button" id="ss-del" class="sec">Borrar</button>
+    <select id="sort"><option value="rel">Orden: relevancia</option><option value="fecha-desc">Fecha: más recientes</option><option value="fecha-asc">Fecha: más antiguos</option></select><label class="m"><input type="checkbox" id="grp"> agrupar por documento</label><span id="rescount" class="m"></span></div>
   <div class="row" style="margin:4px 0"><button type="button" id="export2" class="sec" title="Guarda en un .json todo el índice: documentos, texto extraído/corregido, etiquetas, notas y puntos marcados">💾 Guardar índice completo (.json)</button><span class="m">Contiene textos, etiquetas, notas y marcas (no los archivos originales). Se importa en otro equipo con «Importar índice…».</span></div>
   <div id="results"></div>
 </section>
@@ -63,6 +70,27 @@
     <button id="rep-res" class="sec">Informe de los resultados de la búsqueda</button>
     <button id="rep-all" class="sec">Informe de todos</button>
   </div>
+  <details style="margin-top:8px"><summary><b>Plantilla del informe</b> <span class="m">(cabecera con logotipo, nº de proyecto y revisión; se recuerda por proyecto)</span></summary>
+    <div class="row" style="margin-top:6px"><label class="m">Empresa <input id="rc-co"></label><label class="m">Nº de proyecto <input id="rc-no"></label><label class="m">Revisión <input id="rc-rev" style="width:70px"></label><button type="button" id="rc-revup" class="sec" title="Suma 1 a la revisión (A→B, 0→1…)">Nueva revisión</button><label class="m">Elaborado por <input id="rc-au"></label></div>
+    <div class="row" style="margin-top:6px"><label class="m">Logotipo <input id="rc-logo" type="file" accept="image/*"></label><button type="button" id="rc-logoclear" class="sec">Quitar logotipo</button><span id="rc-logoprev"></span></div>
+  </details>
+</section>
+
+<section class="card" id="reqcard">
+  <h2>5 · Requisitos y su estado</h2>
+  <div class="row"><select id="rq-status"><option value="">Todos los estados</option><option>pendiente</option><option>aceptado</option><option>descartado</option><option>conflicto</option></select><input type="search" id="rq-txt" placeholder="Filtrar por texto, concepto o nota…"><span id="rq-count" class="m"></span><button id="rq-xlsx" class="sec">Descargar requisitos (.xlsx)</button></div>
+  <p class="m" style="margin:6px 0">Los requisitos los eliges tú (texto literal + página de origen). Los estados son tuyos: la app no decide cuál prevalece. Se incluyen en el informe.</p>
+  <div id="reqs"></div>
+</section>
+
+<section class="card" id="rvcard">
+  <h2>6 · Revisión de valores y posibles discrepancias</h2>
+  <div class="row"><select id="rv-cat"></select><input type="search" id="rv-txt" placeholder="Texto del contexto (p. ej. «cocina», «sala de máquinas»)" style="min-width:240px"><input type="search" id="rv-range" placeholder="Rango: 8-12 m/s · >=250 Pa · <45 dB" style="min-width:220px"><button id="rv-go">Revisar</button></div>
+  <div class="row" style="margin-top:6px"><button id="rv-req" class="sec">Añadir marcados como requisitos</button><button id="rv-conf" class="sec">Añadir marcados como «conflicto»</button></div>
+  <div id="rv"></div>
+  <details style="margin-top:10px"><summary><b>Sinónimos de búsqueda</b> <span class="m">(una línea por grupo, separados por comas)</span></summary><textarea id="syn" style="width:100%;min-height:90px"></textarea><div class="row"><button id="syn-save" class="sec">Guardar sinónimos</button></div></details>
+  <details id="ocrdet" style="margin-top:10px"><summary><b>Revisión de OCR dudoso</b> <span id="oc-count" class="m"></span></summary><div id="ocr"></div></details>
+  <details style="margin-top:10px"><summary><b>Hilos de correo</b> <span class="m">(correos agrupados por asunto)</span></summary><div id="threads"></div></details>
 </section>
 
 <section class="card" id="reportcard" hidden>
@@ -80,6 +108,12 @@
 </section>
 
 <section class="card">
+  <h2>Registro de cambios (trazabilidad)</h2>
+  <div class="row"><button id="audit-csv" class="sec">Descargar registro (.csv)</button><span class="m">Quién y cuándo importó, editó, eliminó, reindexó o exportó. Indica tu nombre en la cabecera. Se guarda también en la carpeta de datos.</span></div>
+  <div id="audit" style="max-height:220px;overflow:auto;margin-top:6px"></div>
+</section>
+
+<section class="card">
   <h2>Base de datos y copia en disco</h2>
   <p class="m" style="margin-top:0">El índice vive en el navegador de <b>este equipo</b>. Para que no se pierda de un día para otro (limpieza de datos del sitio, otro perfil o ventana privada), elige una <b>carpeta de datos</b> en este ordenador (p. ej. <code>C:\FEEDBACK\datos</code>): se guarda sola una copia tras cada cambio y se restaura si hace falta. Usa siempre la misma URL y el mismo navegador.</p>
   <div class="row">
@@ -91,10 +125,12 @@
   <h2 style="margin-top:16px">Exportar / importar índice (opcional)</h2>
   <div class="row">
     <button id="export" class="sec">Guardar índice completo (.json)</button>
-    <label class="btn sec">Importar índice…<input id="import" type="file" accept=".json" hidden></label>
+    <label class="btn sec">Importar índice…<input id="import" type="file" accept=".json,.fbk" hidden></label>
+    <input id="enc-pass" type="password" placeholder="Contraseña (cifrado)" style="width:170px" autocomplete="new-password">
+    <button id="export-enc" class="sec" title="Igual que el .json, pero cifrado con AES-256 y contraseña">🔒 Guardar índice cifrado (.fbk)</button>
     <button id="wipe" class="sec danger">Vaciar índice y copia en disco</button>
   </div>
-  <p class="m">La exportación no incluye los originales importados.</p>
+  <p class="m">La exportación no incluye los originales importados. Para importar un .fbk escribe antes la contraseña. Atajos: <b>/</b> buscar · <b>Alt+R</b> informe de resultados · <b>Alt+G</b> guardar índice · <b>Esc</b> cerrar detalle.</p>
 </section>
 </main>
 
@@ -108,5 +144,6 @@
 <script src="vendor/jspdf.js"></script>
 <script src="vendor/jspdf-autotable.js"></script>
 <script type="module" src="js/app.js"></script>
+<script>if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) navigator.serviceWorker.register("sw.js").catch(() => {});</script>
 </body>
 </html>

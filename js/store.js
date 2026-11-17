@@ -19,7 +19,7 @@ async function removeFile(dir, path) { try { const parts = path.split('/'), name
 
 export const Store = {
   dir: null, restoring: false, timer: null, lastSave: null, written: new Set(),
-  dirty: new Set(), deleted: new Set(), flags: { marks: false, log: false, roots: false, wipe: false },
+  dirty: new Set(), deleted: new Set(), flags: { marks: false, log: false, roots: false, wipe: false, extras: false },
   getRoots: () => [], setGhosts: () => {}, onStatus: () => {},
 
   async init() { const m = await DB.get('meta', 'datadir'); this.dir = m?.handle || null; this.status(); },
@@ -46,7 +46,7 @@ export const Store = {
     if (kind === 'put') {
       if (s === 'docs') this.dirty.add(r); else if (s === 'pages') this.dirty.add(v.docId); else if (s === 'blobs') this.dirty.add(k);
       else if (s === 'pimg') this.dirty.add(k[0]); else if (s === 'marks') this.flags.marks = true; else if (s === 'log') this.flags.log = true;
-      else if (s === 'meta' && k === 'folders') this.flags.roots = true; else return;
+      else if (s === 'meta' && k === 'folders') this.flags.roots = true; else if (s === 'meta' && k === 'extras') this.flags.extras = true; else return;
     } else if (kind === 'del') {
       if (s === 'docs') { this.deleted.add(k); this.dirty.delete(k); } else if (s === 'marks') this.flags.marks = true; else return;
     } else if (kind === 'clear' && s === 'docs') { this.flags.wipe = true; this.dirty.clear(); } else return;
@@ -72,7 +72,7 @@ export const Store = {
   },
   async wipeDir() {
     for (const n of ['docs', 'blobs', 'pimg']) { try { await this.dir.removeEntry(n, { recursive: true }); } catch { /* no existe */ } }
-    for (const f of ['manifest.json', 'marks.json', 'log.json', 'roots.json']) await removeFile(this.dir, f);
+    for (const f of ['manifest.json', 'marks.json', 'log.json', 'roots.json', 'extras.json']) await removeFile(this.dir, f);
     this.written.clear();
   },
 
@@ -81,13 +81,14 @@ export const Store = {
     if (!(await this.perm(gesture))) { this.status('⏸ en pausa: pulsa «Guardar copia completa ahora» para reconceder permiso'); return false; }
     clearTimeout(this.timer);
     const dirty = [...this.dirty], deleted = [...this.deleted], f = { ...this.flags };
-    this.dirty.clear(); this.deleted.clear(); this.flags = { marks: false, log: false, roots: false, wipe: false };
+    this.dirty.clear(); this.deleted.clear(); this.flags = { marks: false, log: false, roots: false, wipe: false, extras: false };
     try {
       if (f.wipe) await this.wipeDir();
       for (const id of deleted) await this.removeDocFiles(id);
       for (const id of dirty) await this.writeDoc(id);
       if (f.marks) await writeFile(this.dir, 'marks.json', JSON.stringify(await DB.all('marks')));
       if (f.roots) await writeFile(this.dir, 'roots.json', JSON.stringify(this.getRoots()));
+      if (f.extras) await writeFile(this.dir, 'extras.json', JSON.stringify(await DB.get('meta', 'extras') || {}));
       if (f.log) await writeFile(this.dir, 'log.json', JSON.stringify((await DB.all('log')).slice(-300)));
       await writeFile(this.dir, 'manifest.json', JSON.stringify({ app: 'feedback-web-data', version: 1, savedAt: new Date().toISOString() }));
       this.lastSave = new Date(); this.status(); return true;
@@ -100,7 +101,7 @@ export const Store = {
   async snapshotAll(gesture = true) {
     this.written.clear();
     for (const d of await DB.all('docs')) this.dirty.add(d.id);
-    this.flags.marks = this.flags.roots = this.flags.log = true;
+    this.flags.marks = this.flags.roots = this.flags.log = this.flags.extras = true;
     return this.flush(gesture);
   },
 
@@ -122,6 +123,7 @@ export const Store = {
       for (const [file, st] of [['marks.json', 'marks'], ['log.json', 'log']]) {
         try { for (const x of JSON.parse(await (await readFile(this.dir, file)).text())) await DB.put(st, x); } catch { /* opcional */ }
       }
+      try { await DB.put('meta', JSON.parse(await (await readFile(this.dir, 'extras.json')).text()), 'extras'); } catch { /* opcional */ }
       try { this.setGhosts(JSON.parse(await (await readFile(this.dir, 'roots.json')).text())); } catch { /* opcional */ }
     } finally { this.restoring = false; }
     this.written.clear(); for (const d of await DB.all('docs')) { if (d.source !== 'carpeta') this.written.add('b' + d.id); }

@@ -1,4 +1,5 @@
 // Exportadores del informe: .docx (librería docx), .pdf (jsPDF + autoTable) y .xlsx (escritor propio sobre fflate).
+import { headLine } from './report.js';
 const clean = s => String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '');
 const stamp = () => new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
 export function download(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); }
@@ -19,7 +20,10 @@ export async function toDocx(m) {
   const H = (t, level) => new Paragraph({ heading: level, children: [new TextRun({ text: clean(t), bold: true })], spacing: { before: 240, after: 100 } });
   const gap = () => new Paragraph({ children: [], spacing: { after: 120 } });
 
-  const c = [new Paragraph({ heading: HeadingLevel.TITLE, children: [new TextRun({ text: clean(m.title), bold: true })] }),
+  const logo = m.header?.logo ? Uint8Array.from(atob(m.header.logo.split(',')[1]), ch => ch.charCodeAt(0)) : null;
+  const c = [...(logo ? [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new D.ImageRun({ type: 'png', data: logo, transformation: { width: m.header.lw || 150, height: m.header.lh || 50 } })] })] : []),
+    new Paragraph({ heading: HeadingLevel.TITLE, children: [new TextRun({ text: clean(m.title), bold: true })] }),
+    para(headLine(m.header), { size: 19, bold: true }),
     para(`Generado el ${m.when} · Alcance: ${m.scope} · ${m.count} documento(s)`, { color: '555555', size: 18 }),
     para('Método: ' + m.method, { size: 18, italics: true }), H('Índice', HeadingLevel.HEADING_2),
     ...m.docs.map(d => para(`${d.n}. ${d.title}`, { size: 19, after: 40 }))];
@@ -35,6 +39,7 @@ export async function toDocx(m) {
       if (d.phrases.length) { c.push(H('Frases con carácter de requisito (extracto literal)', HeadingLevel.HEADING_3)); d.phrases.forEach(p => c.push(para(`${p.ctx} (${p.loc})`, { bullet: true, size: 19 }))); }
     }
   }
+  if (m.reqs?.length) c.push(H('Requisitos y su estado', HeadingLevel.HEADING_2), table(['#', 'Requisito (literal)', 'Origen', 'Estado', 'Concepto / nota'], m.reqs.map(q => [String(q.id), q.text, `${q.doc} · ${q.loc}`, q.status, [q.group, q.note].filter(Boolean).join(' · ')]), [5, 42, 22, 11, 20]), gap());
   if (m.comparison.length) {
     c.push(H('Cuadro comparativo de valores por categoría', HeadingLevel.HEADING_2), para(m.compareNote, { size: 18, italics: true }));
     for (const g of m.comparison) c.push(H(g.cat, HeadingLevel.HEADING_3), table(['Valor', 'Documento', 'Ubicación', 'Fecha'], g.rows.map(v => [v.value, `${v.n}. ${v.doc}`, v.loc, v.date]), [20, 50, 18, 12]), gap());
@@ -69,7 +74,9 @@ export function toPdf(m) {
       columnStyles: Object.fromEntries(widths.map((w, i) => [i, { cellWidth: TW * w / 100 }])), tableWidth: TW });
     y = doc.lastAutoTable.finalY + 8;
   };
+  if (m.header?.logo) { try { { const k = 40 / (m.header.lh || 50), w = (m.header.lw || 150) * k; doc.addImage(m.header.logo, 'PNG', W - M - w, M - 10, w, 40); } } catch { /* sin logotipo */ } }
   text(m.title, 18, { bold: true, after: 4 });
+  if (headLine(m.header)) text(headLine(m.header), 9.5, { bold: true, after: 4 });
   text(`Generado el ${m.when} · Alcance: ${m.scope} · ${m.count} documento(s)`, 9, { color: [90, 90, 90], after: 6 });
   text('Metodo: ' + m.method.replace(/^/, ''), 8.5, { italic: true, after: 8 });
   head('Indice', 13); m.docs.forEach(d => text(`${d.n}. ${d.title}`, 9, { after: 1 }));
@@ -84,6 +91,7 @@ export function toPdf(m) {
       if (d.phrases.length) { head('Frases con caracter de requisito (extracto literal)', 10.5); d.phrases.forEach(p => text(`- ${p.ctx} (${p.loc})`, 9, { indent: 6 })); }
     }
   }
+  if (m.reqs?.length) { doc.addPage(); y = M; head('Requisitos y su estado', 13); tbl(['#', 'Requisito (literal)', 'Origen', 'Estado', 'Concepto / nota'], m.reqs.map(q => [String(q.id), q.text, `${q.doc} - ${q.loc}`, q.status, [q.group, q.note].filter(Boolean).join(' - ')]), [5, 42, 22, 11, 20]); }
   if (m.comparison.length) {
     doc.addPage(); y = M; head('Cuadro comparativo de valores por categoria', 13); text(m.compareNote, 8.5, { italic: true, after: 6 });
     for (const g of m.comparison) { head(g.cat, 10.5); tbl(['Valor', 'Documento', 'Ubicacion', 'Fecha'], g.rows.map(v => [v.value, `${v.n}. ${v.doc}`, v.loc, v.date]), [20, 50, 18, 12]); }
@@ -116,9 +124,13 @@ export function toXlsx(m) {
     const fr = m.docs.flatMap(d => d.phrases.map(p => [d.n, d.name, p.loc, p.ctx]));
     if (fr.length) sheets.push({ name: 'Frases requisito', widths: [5, 32, 16, 100], rows: [['#', 'Documento', 'Ubicación', 'Texto literal'], ...fr] });
   }
+  if (m.reqs?.length) sheets.push({ name: 'Requisitos', widths: [6, 70, 34, 14, 26, 28], rows: [['#', 'Requisito (literal)', 'Documento · ubicación', 'Estado', 'Concepto', 'Nota'], ...m.reqs.map(q => [q.id, q.text, `${q.doc} · ${q.loc}`, q.status, q.group, q.note])] });
   if (m.comparison.length) sheets.push({ name: 'Comparativo', widths: [26, 16, 40, 16, 12], rows: [['Categoría', 'Valor', 'Documento', 'Ubicación', 'Fecha'], ...m.comparison.flatMap(g => g.rows.map(v => [g.cat, v.value, `${v.n}. ${v.doc}`, v.loc, v.date]))] });
-  sheets.push({ name: 'Método', widths: [120], rows: [['Método y advertencias'], [m.method], [`Generado el ${m.when} · Alcance: ${m.scope} · ${m.count} documento(s)`], ...(m.comparison.length ? [[m.compareNote]] : [])] });
+  sheets.push({ name: 'Método', widths: [120], rows: [['Método y advertencias'], [headLine(m.header)], [m.method], [`Generado el ${m.when} · Alcance: ${m.scope} · ${m.count} documento(s)`], ...(m.comparison.length ? [[m.compareNote]] : [])] });
 
+  return packXlsx(sheets);
+}
+export function packXlsx(sheets) {
   const E = s => fflate.strToU8(s), files = {
     '[Content_Types].xml': E(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`),
     '_rels/.rels': E(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`),

@@ -32,10 +32,10 @@ export function analyze(pages) {
   const push = (arr, o, k) => { const key = k + '|' + o.page; if (!seen.has(key)) { seen.add(key); arr.push(o); } };
   for (const p of pages) {
     for (const s of sentences(p.text || '')) {
-      for (const [cat, re] of VALUE_PATS) { re.lastIndex = 0; let m; while ((m = re.exec(s))) push(values, { cat, value: m[0].trim(), ctx: clip(s), page: loc(p) }, cat + m[0] + s); }
-      NORM.lastIndex = 0; let n; while ((n = NORM.exec(s))) push(values, { cat: 'Normativa y referencias', value: n[0].trim(), ctx: clip(s), page: loc(p) }, 'N' + n[0] + s);
-      for (const [cat, re] of KEY_PATS) if (re.test(s)) push(values, { cat, value: '—', ctx: clip(s), page: loc(p) }, cat + s);
-      if (REQ.test(s)) push(phrases, { ctx: clip(s), page: loc(p) }, 'P' + s);
+      for (const [cat, re] of VALUE_PATS) { re.lastIndex = 0; let m; while ((m = re.exec(s))) push(values, { cat, value: m[0].trim(), ctx: clip(s), page: loc(p), pageNo: p.pageNo }, cat + m[0] + s); }
+      NORM.lastIndex = 0; let n; while ((n = NORM.exec(s))) push(values, { cat: 'Normativa y referencias', value: n[0].trim(), ctx: clip(s), page: loc(p), pageNo: p.pageNo }, 'N' + n[0] + s);
+      for (const [cat, re] of KEY_PATS) if (re.test(s)) push(values, { cat, value: '—', ctx: clip(s), page: loc(p), pageNo: p.pageNo }, cat + s);
+      if (REQ.test(s)) push(phrases, { ctx: clip(s), page: loc(p), pageNo: p.pageNo }, 'P' + s);
     }
   }
   return { values, phrases };
@@ -51,7 +51,7 @@ const fmt = v => typeof v === 'number' ? 'pág. ' + v : v;
 const day = s => (s || '').replace('T', ' ').slice(0, 16);
 
 // Modelo neutro del informe: de aquí salen el HTML, el .docx, el .pdf y el .xlsx.
-export function buildModel({ items, opts, scope, now = new Date(), rootName }) {
+export function buildModel({ header = {}, reqs = [], items, opts, scope, now = new Date(), rootName }) {
   const all = [];
   const docs = items.map((it, i) => {
     const { doc: d, pages, marks, parent } = it, an = opts.auto ? analyze(pages) : { values: [], phrases: [] };
@@ -77,14 +77,15 @@ export function buildModel({ items, opts, scope, now = new Date(), rootName }) {
   });
   const cats = [...new Set(all.map(v => v.cat))];
   return {
-    title: 'Informe resumen de documentación', when: now.toISOString().replace('T', ' ').slice(0, 16), scope, count: items.length, auto: !!opts.auto,
+    header, title: 'Informe resumen de documentación', when: now.toISOString().replace('T', ' ').slice(0, 16), scope, count: items.length, auto: !!opts.auto,
     method: 'Informe generado por extracción literal de texto (sin inteligencia artificial). Los valores detectados automáticamente son propuestas pendientes de revisión humana, con su texto literal y ubicación de origen; pueden contener errores de OCR o ambigüedades. Los puntos marcados los ha seleccionado el usuario. Los textos corregidos manualmente se indican como tales. Este informe no sustituye al documento original ni resuelve contradicciones entre documentos.',
     compareNote: 'Se muestran juntos los valores detectados en distintos documentos, con su fuente y fecha. No se determina cuál prevalece: la jerarquía documental la define el criterio del ingeniero y las reglas del proyecto.',
-    docs,
+    docs, reqs,
     comparison: opts.auto && opts.compare ? cats.map(c => ({ cat: c, rows: all.filter(v => v.cat === c).sort((a, b) => a.value.localeCompare(b.value, 'es', { numeric: true })) })) : [],
   };
 }
 
+export const headLine = h => h ? [h.co, h.project && `Proyecto: ${h.project}`, h.no && `Nº ${h.no}`, h.rev && `Rev. ${h.rev}`, h.au && `Elaborado por ${h.au}`].filter(Boolean).join(' · ') : '';
 export function renderHtml(m) {
   const toc = m.docs.map(d => `<li><a href="#d${d.n}">${esc(d.title)}</a></li>`).join('');
   const sections = m.docs.map(d => {
@@ -97,9 +98,10 @@ export function renderHtml(m) {
     }
     return h;
   }).join('');
+  const rq = m.reqs?.length ? `<h2>Requisitos y su estado</h2><table><tr><th>#</th><th>Requisito (literal)</th><th>Origen</th><th>Estado</th><th>Concepto</th><th>Nota</th></tr>${m.reqs.map(q => `<tr><td>${q.id}</td><td>${esc(q.text)}</td><td>${esc(q.doc)} · ${esc(q.loc)}</td><td>${esc(q.status)}</td><td>${esc(q.group)}</td><td>${esc(q.note)}</td></tr>`).join('')}</table>` : '';
   const cmp = m.comparison.length ? `<h2>Cuadro comparativo de valores por categoría</h2><p class="nota"><b>${esc(m.compareNote.split(':')[0])}:</b>${esc(m.compareNote.split(':').slice(1).join(':'))}</p>` +
     m.comparison.map(c => `<h3>${esc(c.cat)}</h3><table><tr><th>Valor</th><th>Documento</th><th>Ubicación</th><th>Fecha</th></tr>${c.rows.map(v => `<tr><td>${esc(v.value)}</td><td>${v.n}. ${esc(v.doc)}</td><td>${esc(v.loc)}</td><td>${esc(v.date)}</td></tr>`).join('')}</table>`).join('') : '';
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(m.title)}</title><style>${CSS}</style></head><body>
-    <h1>${esc(m.title)}</h1><p class="m">Generado el ${m.when} · Alcance: ${esc(m.scope)} · ${m.count} documento(s)</p>
-    <p class="nota"><b>Método:</b> ${esc(m.method)}</p><h2>Índice</h2><ol>${toc}</ol>${sections}${cmp}</body></html>`;
+    ${m.header?.logo ? `<img src="${m.header.logo}" style="max-height:60px;float:right">` : ''}<h1>${esc(m.title)}</h1><p class="m">${esc(headLine(m.header))}</p><p class="m">Generado el ${m.when} · Alcance: ${esc(m.scope)} · ${m.count} documento(s)</p>
+    <p class="nota"><b>Método:</b> ${esc(m.method)}</p><h2>Índice</h2><ol>${toc}</ol>${sections}${rq}${cmp}</body></html>`;
 }

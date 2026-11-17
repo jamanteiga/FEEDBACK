@@ -74,3 +74,17 @@ Botón «💾 Guardar índice completo (.json)» (encima de los resultados y en 
 
 ## Editar, eliminar y reindexar
 En el detalle de un documento («ver / editar»): título, etiquetas, nota, datos del correo y **corrección del texto** de cada parte (p. ej. errores de OCR; se conserva el original y puede restaurarse). **Eliminar del índice** quita el documento y sus adjuntos de búsquedas e informes sin borrar ningún archivo del disco; los de carpeta quedan como «excluido» y se pueden **restaurar**. **Reindexar** vuelve a leer el original (se conservan título, etiquetas, nota y marcas; se pierden las correcciones de texto). Tras cada cambio se refrescan la búsqueda y el informe abierto. Nuevo filtro «Título/etiqueta contiene…».
+
+## Novedades v0.11
+- **Proyectos/buques**: selector en la cabecera (＋ para crear). Cada documento y carpeta pertenece a un proyecto; búsquedas, panel e informes se limitan al proyecto activo (o «Todos»). Se puede cambiar el proyecto de un documento en «✎ Editar este documento».
+- **Requisitos y su estado** (sección 5): desde el detalle («☑ Añadir selección como requisito»), desde un punto marcado («→ requisito») o desde la revisión de valores. Estados pendiente/aceptado/descartado/conflicto, concepto y nota; los fijas tú. Se incluyen en el informe y se descargan en .xlsx. Si se elimina el documento de origen, el requisito queda marcado «origen eliminado» y sale del informe.
+- **Revisión de valores y posibles discrepancias** (sección 6): valores literales agrupados por magnitud y unidad, con aviso cuando aparecen cifras distintas en documentos distintos. Filtro por texto y por rango (`8-12 m/s`, `>=250 Pa`, `<45 dB`). No decide cuál prevalece.
+- **Búsquedas guardadas** con aviso de documentos nuevos desde la última vez; **sinónimos editables** (caudal = flujo…, m3/h = m³/h); orden por relevancia o fecha; agrupar por documento; contadores por tipo; **hilos de correo**.
+- **Visor integrado**: «abrir original» de un PDF lo muestra en la página exacta con los términos buscados resaltados (solo PDF con texto; no en imágenes).
+- **Revisión de OCR dudoso**: imagen a la izquierda, texto editable a la derecha, página a página.
+- **Informe con plantilla**: empresa, nº de proyecto, revisión (botón «Nueva revisión»), autor y logotipo, por proyecto; salen en HTML, .docx, .pdf y .xlsx.
+- **Registro de cambios**: quién/cuándo importó, editó, eliminó, reindexó o exportó (indica tu nombre en la cabecera); descargable en .csv y guardado en la carpeta de datos.
+- **Copia cifrada**: «🔒 Guardar índice cifrado (.fbk)» (AES-256-GCM, clave por contraseña). Sin la contraseña no se puede recuperar. Para importarlo, escribe antes la contraseña.
+- **Panel de inicio** con totales y aviso de copia en disco ausente o antigua; **modo oscuro**; **atajos**: `/` buscar, `Alt+R` informe de resultados, `Alt+G` guardar índice, `Esc` cerrar.
+- **Instalable (PWA)** y utilizable sin conexión tras la primera carga (Edge/Chrome: menú ⋯ → Aplicaciones → Instalar este sitio como aplicación). Las actualizaciones llegan solas al recargar.
+- La página ya no se bloquea tanto al indexar lotes grandes (PDF.js y el OCR ya iban en hilos aparte; ahora se cede el control entre páginas). No se han movido a hilos aparte la lectura de Office/correo.

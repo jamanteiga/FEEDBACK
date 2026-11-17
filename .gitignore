@@ -7,3 +7,7 @@
 *.png
 *.json
 data/
+
+# Iconos de la app (no son documentos)
+!icon-192.png
+!icon-512.png

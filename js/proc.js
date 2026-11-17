@@ -5,6 +5,8 @@ import * as pdfjsLib from '../vendor/pdfjs/pdf.min.mjs';
 const abs = p => new URL(p, document.baseURI).href;
 pdfjsLib.GlobalWorkerOptions.workerSrc = abs('vendor/pdfjs/pdf.worker.min.mjs');
 
+export { pdfjsLib };
+export const openPdfDoc = buf => pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)), cMapUrl: abs('vendor/pdfjs/cmaps/'), cMapPacked: true, standardFontDataUrl: abs('vendor/pdfjs/standard_fonts/'), wasmUrl: abs('vendor/pdfjs/wasm/'), iccUrl: abs('vendor/pdfjs/iccs/') });
 export const MIN_NATIVE_CHARS = 20;
 export const PDF_OCR_DPI = 300;
 export const MAX_SIDE = 4200;
