@@ -1,4 +1,4 @@
-# Seguridad: nunca subir documentos ni datos
+# Seguridad: nunca subir documentos, correos ni datos de la app (solo código)
 *.pdf
 *.tif
 *.tiff
@@ -6,7 +6,24 @@
 *.jpeg
 *.png
 *.json
+*.msg
+*.eml
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.zip
+*.fbd
+*.fbv
+*.fbk
 data/
+docs/
+blobs/
+pimg/
+originales/
+versions/
 
 # Iconos de la app (no son documentos)
 !icon-192.png

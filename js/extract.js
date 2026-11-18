@@ -99,3 +99,12 @@ export function extractDocument(ext, buf) {
   return chunk(t);
 }
 export const FORMAT_NAME = { docx: 'Word', xlsx: 'Excel', pptx: 'PowerPoint', txt: 'texto', csv: 'CSV', tsv: 'TSV', log: 'texto', md: 'texto', html: 'HTML', htm: 'HTML', rtf: 'RTF (aproximado)', zip: 'ZIP' };
+
+// Imágenes incrustadas en Word/Excel/PowerPoint (capturas, fotos de planos…): se devuelven como «adjuntos» para que se les pase OCR.
+export function embeddedImages(ext, buf) {
+  if (!['docx', 'xlsx', 'pptx'].includes(ext)) return [];
+  try {
+    return zipEntries(buf).filter(f => /(^|\/)(word|ppt|xl)\/media\//i.test(f.path) && /\.(png|jpe?g|tiff?)$/i.test(f.name)).slice(0, 40)
+      .map((f, i) => ({ name: `imagen-incrustada-${String(i + 1).padStart(2, '0')}-${f.name}`, mime: '', bytes: f.bytes, inline: f.bytes.byteLength < 8192 }));
+  } catch { return []; }
+}

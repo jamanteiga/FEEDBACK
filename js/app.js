@@ -1,11 +1,14 @@
+import { embeddedImages } from './extract.js';
 import { DB } from './db.js';
 import { sha256, processPdf, processImage } from './proc.js';
 import { buildModel, renderHtml } from './report.js';
 import { toDocx, toPdf, toXlsx, download, reportName } from './export.js';
 import { Store } from './store.js';
 import { Extras, encryptBytes, decryptBytes } from './extras.js';
+import { packXlsx } from './export.js';
 import { initPanels, synVariants } from './panels.js';
 import { openViewer } from './viewer.js';
+import { compareDocs, hunks } from './compare.js';
 import { DOC_EXT, LEGACY_EXT, extractDocument, zipEntries, htmlToText, FORMAT_NAME } from './extract.js';
 
 const $ = s => document.querySelector(s);
@@ -55,8 +58,21 @@ function fillProjects() {
   if (curProject && !Extras.d.projects.includes(curProject)) { curProject = ''; sel.value = ''; }
 }
 // ---- estado / mensajes ----
-const setStatus = (t, cls = '') => { const e = $('#status'); e.className = 'msg ' + cls; e.textContent = t; e.hidden = !t; };
-const addMsg = (cls, html) => { $('#upmsgs').insertAdjacentHTML('afterbegin', `<div class="msg ${cls}">${html}</div>`); };
+const setStatus = (t, cls = '') => { const e = $('#status'); e.className = 'msg ' + cls; e.textContent = t; e.hidden = !t; const b = $('#busy'); if (b) b.textContent = t ? '⏳ ' + t.slice(0, 80) : ''; };
+const addMsg = (cls, html) => {
+  $('#upmsgs').insertAdjacentHTML('afterbegin', `<div class="msg ${cls}">${html}</div>`);
+  if (!$('#toasts')) return;   // aviso flotante: se ve aunque estés en otra pestaña
+  const t = document.createElement('div'); t.className = 'msg ' + cls; t.innerHTML = html; t.onclick = () => t.remove(); $('#toasts').appendChild(t);
+  setTimeout(() => t.remove(), cls === 'error' ? 14000 : 7000); while ($('#toasts').children.length > 4) $('#toasts').firstChild.remove();
+};
+// ---- pestañas (una pantalla de altura) ----
+function goTab(name) {
+  localStorage.setItem('fb-tab', name);
+  document.querySelectorAll('[data-tab]').forEach(s => s.classList.toggle('on', s.dataset.tab === name));
+  document.querySelectorAll('#tabs .tab').forEach(b => b.classList.toggle('on', b.dataset.go === name));
+}
+document.querySelectorAll('#tabs .tab').forEach(b => b.onclick = () => goTab(b.dataset.go));
+goTab(localStorage.getItem('fb-tab') || 'inicio');
 
 // ---- correos (.eml / .msg) ----
 const addr = a => a ? (a.name && a.address ? `${a.name} <${a.address}>` : (a.address || a.name || '')) : '';
@@ -122,7 +138,7 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent, roo
         const ents = zipEntries(buf);
         pages = [{ pageNo: 1, label: '', method: 'documento', conf: null, text: 'Contenido del ZIP:\n' + ents.map(e => e.path).join('\n'), steps: [note], processed: null }];
         mailAtts = ents.map(e => ({ name: e.name, mime: '', bytes: e.bytes, inline: false }));
-      } else pages = extractDocument(ext, buf).map(x => ({ pageNo: x.pageNo, label: x.label, method: 'documento', conf: null, text: x.text, steps: [note], processed: null }));
+      } else { pages = extractDocument(ext, buf).map(x => ({ pageNo: x.pageNo, label: x.label, method: 'documento', conf: null, text: x.text, steps: [note], processed: null })); mailAtts = embeddedImages(ext, buf); }   // imágenes incrustadas: se les pasa OCR solas
     } else pages = kind === 'pdf' ? await processPdf(buf, onP, onS) : await processImage(file, buf, onP, onS);
     let low = 0; const mini_docs = [];
     for (const p of pages) {
@@ -474,7 +490,7 @@ async function showDoc(id, page) {
     <div class="m"><b>Transformaciones aplicadas:</b> ${pg.steps?.length ? pg.steps.map(s => esc(s.step) + ' (' + esc(s.detail) + ')').join(' · ') : 'ninguna (texto nativo)'}</div>
     <div style="margin-top:8px">${pages.map(p => `<a href="#" data-detail="${id}" data-page="${p.pageNo}">p.${p.pageNo}</a>`).join(' · ')}</div>`;
   await renderMarks(id);
-  $('#detailcard').scrollIntoView({ behavior: 'smooth' });
+  goTab('buscar'); $('#detailcard').scrollIntoView({ behavior: 'smooth' });
 }
 
 async function renderMarks(docId) {
@@ -499,18 +515,18 @@ function renderDash() {
     <div><b style="font-size:22px">${ok.length}</b><div class="m">documentos<br>${by('pdf')} PDF · ${by('imagen')} img · ${by('correo')} correos · ${by('documento')} otros</div></div>
     <div><b style="font-size:22px">${ok.reduce((n, d) => n + (d.pages || 0), 0)}</b><div class="m">páginas/partes indexadas</div></div>
     <div><b style="font-size:22px">${ds.filter(d => d.status === 'error').length}</b><div class="m">con error · ${ds.filter(d => d.status === 'excluido').length} excluidos</div></div>
-    <div><b style="font-size:22px">${st.length}</b><div class="m">requisitos · ${st.filter(r => r.status === 'pendiente').length} pendientes · ${st.filter(r => r.status === 'conflicto').length} en conflicto</div></div></div>
+    <div><b style="font-size:22px">${st.length}</b><div class="m">requisitos · ${st.filter(r => r.status === 'pendiente').length} pendientes · ${st.filter(r => r.status === 'conflicto').length} en conflicto${panels?.overdueCount?.() ? ` · <b style="color:#b42318">${panels.overdueCount()} vencidos</b>` : ''}</div></div></div>
     ${stale ? `<div class="msg duplicado">⚠ ${esc(stale)}</div>` : ''}`;
 }
 async function refresh() {
   renderDash(); renderAudit(); panels.renderReqs(); panels.renderThreads(); panels.renderOcr(); panels.updateBadges();
-  const docs = [...docsById.values()].filter(inProj).sort((a, b) => b.id - a.id);
+  const docs = [...docsById.values()].filter(d => inProj(d) && !d.hidden).sort((a, b) => b.id - a.id);
   $('#docs').innerHTML = docs.length ? `<table><tr><th></th><th>#</th><th>Archivo</th><th>Tipo</th><th>Origen</th><th>Págs</th><th>Indexado</th><th>Estado</th><th>Acciones</th></tr>` +
     docs.map(d => `<tr><td>${d.status === 'ok' ? `<input type="checkbox" data-sel="${d.id}" ${selected.has(d.id) ? 'checked' : ''}>` : ''}</td><td>${d.id}</td><td>${esc(d.path ? d.path.join('/') : d.name)}${d.title ? `<div class="m">${esc(d.title)}</div>` : ''}</td><td>${d.kind}</td><td>${esc(d.via)}</td><td>${d.pages}</td><td>${fdate(d.ingestedAt)}</td>
     <td>${d.status === 'ok' ? `<a href="#" data-open="${d.id}" data-page="1">original</a>` : `<span class="tag warn">${d.status}</span>`}</td>
     <td>${d.status === 'ok' ? `<a href="#" data-detail="${d.id}" data-page="1">ver/editar</a>${d.parentId ? '' : ` · <a href="#" data-act="reindex" data-id="${d.id}">reindexar</a>`} · <a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>` : d.status === 'excluido' ? `<a href="#" data-act="restore" data-id="${d.id}">restaurar</a>` : `<a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>`}</td></tr>`).join('') + '</table>' : '<div class="empty">Aún no hay documentos.</div>';
   $('#rep-sel').textContent = `Informe de los seleccionados (${selected.size})`; $('#rep-sel').disabled = !selected.size;
-  $('#bulk-del').textContent = `Eliminar seleccionados del índice (${selected.size})`; $('#bulk-del').disabled = !selected.size;
+  $('#bulk-del').textContent = `Eliminar seleccionados del índice (${selected.size})`; $('#bulk-del').disabled = !selected.size; $('#cmp-btn').disabled = selected.size !== 2; $('#cmp-btn').textContent = `Comparar versiones (${selected.size}/2)`;
   const bad = (await DB.all('log')).filter(l => l.level !== 'info').reverse().slice(0, 100);
   $('#log').innerHTML = bad.length ? bad.map(l => `<div class="msg ${l.level}"><b>${esc(l.filename)}</b> — ${esc(l.message)} <span class="m">(${fdate(l.at)})</span></div>`).join('') : '<div class="empty">Sin incidencias.</div>';
 }
@@ -586,7 +602,7 @@ document.addEventListener('paste', e => {
   const files = [...(e.clipboardData?.files || [])]; if (!files.length) return; e.preventDefault();
   importFiles(files.map((f, i) => (f.name && f.name !== 'image.png') ? f : new File([f], `pegado_${Date.now()}_${i}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type })), 'pegar');
 });
-document.addEventListener('change', e => { const c = e.target.closest('[data-sel]'); if (!c) return; c.checked ? selected.add(+c.dataset.sel) : selected.delete(+c.dataset.sel); const b = $('#rep-sel'); b.textContent = `Informe de los seleccionados (${selected.size})`; b.disabled = !selected.size; $('#bulk-del').textContent = `Eliminar seleccionados del índice (${selected.size})`; $('#bulk-del').disabled = !selected.size; });
+document.addEventListener('change', e => { const c = e.target.closest('[data-sel]'); if (!c) return; c.checked ? selected.add(+c.dataset.sel) : selected.delete(+c.dataset.sel); const b = $('#rep-sel'); b.textContent = `Informe de los seleccionados (${selected.size})`; b.disabled = !selected.size; $('#bulk-del').textContent = `Eliminar seleccionados del índice (${selected.size})`; $('#bulk-del').disabled = !selected.size; $('#cmp-btn').disabled = selected.size !== 2; $('#cmp-btn').textContent = `Comparar versiones (${selected.size}/2)`; });
 document.addEventListener('click', e => { const b = e.target.closest('#ed-savemeta,#ed-savetext'); if (!b) return; b.id === 'ed-savemeta' ? editMeta(+b.dataset.doc) : savePageText(+b.dataset.doc, +b.dataset.page); });
 document.addEventListener('mousedown', e => { if (e.target.closest('#markbtn,#reqbtn')) e.preventDefault(); });
 document.addEventListener('click', async e => {
@@ -597,6 +613,88 @@ document.addEventListener('click', async e => {
   await panels.changed(); addMsg(r ? 'ok' : 'duplicado', r ? 'Añadido a la lista de requisitos (estado: pendiente).' : 'Ese texto ya está en requisitos.');
 });   // no perder la selección al pulsar
 document.addEventListener('click', e => { const b = e.target.closest('#markbtn'); if (b) addMark(+b.dataset.doc, +b.dataset.page); });
+
+// ---- comparar dos versiones de un documento ----
+let cmpSwap = false, cmpData = null;
+async function compareSelected() {
+  const ids = [...selected].filter(id => docsById.get(id)?.status === 'ok'); if (ids.length !== 2) return addMsg('error', 'Marca exactamente 2 documentos en la tabla.');
+  let [x, y] = ids.map(id => docsById.get(id)).sort((p, q) => (p.emailDate || p.fileDate || '').localeCompare(q.emailDate || q.fileDate || '') || p.id - q.id);
+  if (cmpSwap) [x, y] = [y, x];
+  const pg = async d => (await DB.byIndex('pages', 'docId', d.id)).sort((p, q) => p.pageNo - q.pageNo);
+  const r = compareDocs(await pg(x), await pg(y)); cmpData = { x, y, r };
+  const nm = d => esc(d.title || d.subject || d.name), loc = o => esc((o.a || o.b).loc);
+  const hs = r.ops ? hunks(r.ops) : [];
+  $('#cmp').innerHTML = `<div class="row"><b>A (anterior):</b> ${nm(x)} <span class="m">${fdate(x.emailDate || x.fileDate)}</span> · <b>B (posterior):</b> ${nm(y)} <span class="m">${fdate(y.emailDate || y.fileDate)}</span><button class="sec" id="cmp-swap">Intercambiar A y B</button><button class="sec" id="cmp-xlsx">Descargar (.xlsx)</button></div>
+    ${r.ops ? `<p class="m"><span class="tag" style="color:#15803d">+${r.added} líneas añadidas</span><span class="tag" style="color:#b42318">−${r.removed} líneas eliminadas</span><span class="tag">${r.same} iguales</span> · Comparación literal por líneas: un cambio de formato o de saltos de línea puede aparecer como diferencia.</p>` : '<p class="msg error">Los documentos son demasiado distintos o grandes para compararlos línea a línea.</p>'}
+    <h2 style="margin-top:10px">Valores técnicos que cambian</h2>${r.values.length ? `<table><tr><th>Dónde</th><th>Categoría</th><th>Valor</th><th>Texto literal</th><th>Ubicación</th></tr>${r.values.map(v => `<tr><td>${v.side}</td><td>${esc(v.cat)}</td><td><b>${esc(v.value)}</b></td><td>${esc(v.ctx)}</td><td>${esc(String(v.page))}</td></tr>`).join('')}</table>` : '<div class="empty">Los mismos valores detectados en ambas versiones.</div>'}
+    <h2 style="margin-top:10px">Cambios de texto</h2>${hs.length ? hs.map(h => `<div style="border:1px solid var(--line);border-radius:6px;margin:6px 0;padding:4px 8px;font-size:13px">${h.map(o => o.op === '=' ? `<div class="m">&nbsp;&nbsp;${esc(o.a.t)}</div>` : o.op === '-' ? `<div style="background:#fde8e6;color:#7a1b12"><span class="m">A · ${loc(o)}</span> − ${esc(o.a.t)}</div>` : `<div style="background:#e5f6ea;color:#0f5a2a"><span class="m">B · ${loc(o)}</span> + ${esc(o.b.t)}</div>`).join('')}</div>`).join('') : '<div class="empty">Sin cambios de texto.</div>'}`;
+  goTab('documentos'); $('#cmpcard').hidden = false; $('#cmpcard').scrollIntoView({ behavior: 'smooth' });
+  await Extras.log('Comparación de versiones', `${x.name} ↔ ${y.name}`, `+${r.added} −${r.removed}`);
+}
+document.addEventListener('click', e => {
+  if (e.target.closest('#cmp-swap')) { cmpSwap = !cmpSwap; compareSelected(); }
+  else if (e.target.closest('#cmp-xlsx') && cmpData) {
+    const { x, y, r } = cmpData, rows = r.ops.filter(o => o.op !== '=').map(o => [o.op === '+' ? 'Añadido en B' : 'Eliminado de A', (o.a || o.b).loc, (o.a || o.b).t]);
+    download(packXlsx([{ name: 'Cambios de texto', widths: [18, 16, 110], rows: [['Tipo', 'Ubicación', 'Texto literal'], ...rows] }, { name: 'Valores', widths: [12, 24, 16, 80, 16], rows: [['Dónde', 'Categoría', 'Valor', 'Texto literal', 'Ubicación'], ...r.values.map(v => [v.side, v.cat, v.value, v.ctx, String(v.page)])] }, { name: 'Documentos', widths: [8, 60], rows: [['', 'Documento'], ['A (anterior)', x.name], ['B (posterior)', y.name]] }]), `feedback-comparacion-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
+});
+
+// ---- comprobador de integridad ----
+async function checkIntegrity() {
+  const ds = [...docsById.values()].filter(d => d.status === 'ok' && inProj(d) && !d.parentId), res = [], perm = new Map();
+  setStatus('Comprobando integridad…', 'info');
+  for (const d of ds) {
+    let st = 'ok', note = '';
+    if (d.source === 'carpeta') {
+      const r = roots.get(d.rootId);
+      if (!r?.handle) { st = 'sin comprobar'; note = 'carpeta no enlazada en este equipo'; }
+      else {
+        if (!perm.has(r.id)) perm.set(r.id, await ensurePerm(r.handle));
+        if (!perm.get(r.id)) { st = 'sin comprobar'; note = 'sin permiso sobre la carpeta'; }
+        else try { let h = r.handle; for (const seg of d.path.slice(0, -1)) h = await h.getDirectoryHandle(seg); const f = await (await h.getFileHandle(d.path.at(-1))).getFile();
+          if (f.size !== d.size || new Date(f.lastModified).toISOString() !== d.fileDate) { st = 'modificado'; note = 'el archivo ha cambiado desde que se indexó'; } } catch { st = 'no encontrado'; note = 'el archivo ya no está en la carpeta'; }
+      }
+    } else if (d.sinOriginal || !(await DB.get('blobs', d.id))) { st = 'sin original'; note = 'el original no está guardado en este navegador (solo se conserva el texto)'; }
+    res.push({ d, st, note });
+  }
+  setStatus('');
+  const bad = res.filter(r => r.st !== 'ok');
+  $('#integ').innerHTML = `<div class="msg ${bad.length ? 'duplicado' : 'ok'}">${res.length} documento(s) comprobados: ${res.length - bad.length} correctos · ${bad.length} con incidencias.</div>` +
+    (bad.length ? `<table><tr><th>Documento</th><th>Estado</th><th>Detalle</th><th>Acciones</th></tr>${bad.map(({ d, st, note }) => `<tr><td>${esc(d.path ? d.path.join('/') : d.name)}</td><td><span class="tag warn">${st}</span></td><td>${note}</td><td>${st === 'modificado' ? `<a href="#" data-act="reindex" data-id="${d.id}">reindexar</a> · ` : ''}<a href="#" data-act="exclude" data-id="${d.id}">eliminar</a></td></tr>`).join('')}</table>` : '');
+  await Extras.log('Comprobación de integridad', '', `${bad.length} incidencia(s) de ${res.length}`);
+}
+$('#integ-btn').onclick = () => checkIntegrity().catch(e => { setStatus(''); addMsg('error', esc(e.message)); });
+$('#cmp-btn').onclick = () => { cmpSwap = false; compareSelected(); };
+
+// ---- duplicados en bloque ----
+const dupDocs = () => [...docsById.values()].filter(d => d.status === 'duplicado' && inProj(d));
+async function clearDuplicates() {
+  const dups = dupDocs(), logs = (await DB.all('log')).filter(l => l.level === 'duplicado');
+  if (!dups.length && !logs.length) return addMsg('ok', 'No hay duplicados en el registro.');
+  if (!confirm(`¿Quitar ${dups.length} duplicado(s) del registro y de la tabla?\n\nNo se borra ningún archivo del disco; los duplicados no estaban indexados. Los archivos de carpeta seguirán reconociéndose como duplicados sin volver a mostrarse.`)) return;
+  for (const d of dups) { if (d.source === 'carpeta') { d.hidden = true; await DB.put('docs', d); } else await removeDoc(d.id); }
+  for (const l of logs) await DB.del('log', l.id);
+  await Extras.log('Duplicados quitados del registro', `${dups.length} documento(s)`); await afterChange();
+}
+async function deleteDupFiles() {
+  const plan = []; for (const d of dupDocs().filter(x => x.source === 'carpeta' && x.path)) { const keep = [...docsById.values()].find(x => x.sha256 === d.sha256 && x.status === 'ok'); if (keep) plan.push({ d, keep }); }
+  if (!plan.length) return addMsg('ok', 'No hay archivos duplicados en carpetas enlazadas con copia original indexada.');
+  const lista = plan.slice(0, 12).map(p => `• ${p.d.path.join('/')}\n   (se conserva: ${(p.keep.path || [p.keep.name]).join('/')})`).join('\n');
+  if (!confirm(`Se van a BORRAR DEL DISCO ${plan.length} archivo(s) duplicado(s) exactos (mismo contenido que otro ya indexado). No van a la Papelera y no se pueden recuperar.\n\n${lista}${plan.length > 12 ? `\n… y ${plan.length - 12} más` : ''}\n\n¿Continuar?`)) return;
+  let ok = 0, fail = 0; const perm = new Map();
+  for (const { d, keep } of plan) {
+    const r = roots.get(d.rootId); try {
+      if (!r?.handle) throw new Error('carpeta no enlazada');
+      if (!perm.has(r.id)) perm.set(r.id, (await r.handle.requestPermission({ mode: 'readwrite' })) === 'granted'); if (!perm.get(r.id)) throw new Error('sin permiso de escritura');
+      if (keep.source === 'carpeta') { const kr = roots.get(keep.rootId); if (!kr?.handle) throw new Error('no se puede verificar la copia que se conserva'); let kh = kr.handle; for (const s of keep.path.slice(0, -1)) kh = await kh.getDirectoryHandle(s); const kf = await (await kh.getFileHandle(keep.path.at(-1))).getFile(); if (kf.size !== keep.size) throw new Error('la copia que se conserva ha cambiado'); }
+      let dh = r.handle; for (const s of d.path.slice(0, -1)) dh = await dh.getDirectoryHandle(s); await dh.removeEntry(d.path.at(-1)); await removeDoc(d.id); ok++;
+    } catch (e) { fail++; await DB.addLog('error', d.path.join('/'), 'No se pudo borrar el duplicado: ' + e.message); }
+  }
+  for (const l of (await DB.all('log')).filter(l => l.level === 'duplicado')) await DB.del('log', l.id);
+  await Extras.log('Duplicados borrados del disco', `${ok} archivo(s)`, fail ? `${fail} con error` : ''); addMsg(fail ? 'duplicado' : 'ok', `${ok} duplicado(s) borrados del disco${fail ? ` · ${fail} no se pudieron borrar (ver registro)` : ''}.`); await afterChange();
+}
+$('#dup-clear').onclick = () => clearDuplicates().catch(e => addMsg('error', esc(e.message)));
+$('#dup-disk').onclick = () => deleteDupFiles().catch(e => addMsg('error', esc(e.message)));
 
 // ---- registro de cambios ----
 function renderAudit() {
@@ -633,10 +731,10 @@ async function makeReport(spec, quiet) {
       pages: (await DB.byIndex('pages', 'docId', id)).sort((a, b) => a.pageNo - b.pageNo),
       marks: (await DB.byIndex('marks', 'docId', id)).sort((a, b) => a.pageNo - b.pageNo || a.id - b.id) });
   }
-  const reqs = panels.reqsInProj().filter(r => docsById.get(r.docId)?.status === 'ok').map(r => { const d = docsById.get(r.docId); return { id: r.id, text: r.text, doc: d.title || d.subject || d.name, loc: 'pág. ' + r.pageNo, status: r.status, group: r.group || '', note: r.note || '' }; });
+  const reqs = panels.reqsInProj().filter(r => docsById.get(r.docId)?.status === 'ok').map(r => { const d = docsById.get(r.docId); return { id: r.id, text: r.text, doc: d.title || d.subject || d.name, loc: 'pág. ' + r.pageNo, status: r.status, group: [r.group, r.link && 'Vinculado a: ' + r.link, r.owner && 'Resp.: ' + r.owner, r.due && 'Vence: ' + r.due].filter(Boolean).join(' · '), note: r.note || '' }; });
   reportModel = buildModel({ reqs, header: { project: cfgKey(), ...cfg() }, items, scope, opts: { auto: $('#rep-auto').checked, compare: $('#rep-cmp').checked }, rootName: id => roots.get(id)?.name });
   $('#reportcard').hidden = false; $('#reportframe').srcdoc = renderHtml(reportModel);
-  if (!quiet) $('#reportcard').scrollIntoView({ behavior: 'smooth' });
+  if (!quiet) { goTab('informes'); $('#reportcard').scrollIntoView({ behavior: 'smooth' }); }
 }
 const refreshReport = () => reportSpec && !$('#reportcard').hidden ? makeReport(reportSpec, true) : null;
 $('#rep-sel').onclick = () => makeReport('sel');
@@ -688,6 +786,17 @@ async function pickDataDir() {
   } catch (e) { addMsg('error', esc(e.message)); }
 }
 $('#dd-pick').onclick = pickDataDir;
+async function renderVersions() {
+  const vs = await Store.listVersions(), f = n => n.replace(/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d).*$/, '$3/$2/$1 $4:$5');
+  $('#ver').innerHTML = vs.length ? vs.map(v => `<option value="${v.name}">${f(v.name)} · ${Math.round(v.size / 1024)} KB</option>`).join('') : '<option value="">(sin versiones)</option>';
+  $('#ver-restore').disabled = !vs.length;
+}
+Store.onVersions = renderVersions;
+$('#ver-save').onclick = async () => { if (!Store.dir) return pickDataDir(); try { await Store.writeVersion('manual'); await Extras.log('Versión guardada', 'manual'); addMsg('ok', 'Versión guardada. Se conservan las últimas ' + Store.KEEP + '.'); } catch (e) { addMsg('error', esc(e.message)); } };
+$('#ver-restore').onclick = async () => {
+  const n = $('#ver').value; if (!n || !confirm('Se sustituirá el índice actual por el de la versión elegida (antes se guarda una versión de seguridad del estado actual, por si quieres deshacerlo). ¿Continuar?')) return;
+  try { const k = await Store.restoreVersion(n); await afterRestore(k); await Extras.log('Versión restaurada', n); } catch (e) { addMsg('error', esc(e.message)); }
+};
 $('#dd-save').onclick = async () => { if (!Store.dir) return pickDataDir(); try { if (await Store.snapshotAll(true)) addMsg('ok', 'Copia completa guardada en la carpeta de datos.'); } catch (e) { addMsg('error', esc(e.message)); } };
 $('#dd-restore').onclick = async () => {
   if (!Store.dir) return pickDataDir();
@@ -718,7 +827,7 @@ document.addEventListener('keydown', e => {
 // ---- arranque ----
 (async () => {
   await DB.open(); await loadIndex();
-  await Store.init(); DB.onChange = (...a) => Store.hook(...a);
+  await Store.init(); DB.onChange = (...a) => Store.hook(...a); Store.checkMigration().catch(() => {});
   navigator.storage?.persist?.();
   if (!window.showDirectoryPicker) $('#nofs').hidden = false;
   let saved = await DB.get('meta', 'folders');
@@ -732,5 +841,5 @@ document.addEventListener('keydown', e => {
     } catch { /* se mostrará el estado */ }
   }
   window.__feedback = { Store, setDataDir: h => { Store.dir = h; Store.status(); }, addRoot: h => addRoot(h, false), scan, importFiles, ready: true };   // gancho para pruebas automáticas
-  loadCfg(); await refresh(); await runSearch();
+  loadCfg(); await refresh(); await runSearch(); renderVersions();
 })();

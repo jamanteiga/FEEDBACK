@@ -88,3 +88,17 @@ En el detalle de un documento («ver / editar»): título, etiquetas, nota, dato
 - **Panel de inicio** con totales y aviso de copia en disco ausente o antigua; **modo oscuro**; **atajos**: `/` buscar, `Alt+R` informe de resultados, `Alt+G` guardar índice, `Esc` cerrar.
 - **Instalable (PWA)** y utilizable sin conexión tras la primera carga (Edge/Chrome: menú ⋯ → Aplicaciones → Instalar este sitio como aplicación). Las actualizaciones llegan solas al recargar.
 - La página ya no se bloquea tanto al indexar lotes grandes (PDF.js y el OCR ya iban en hilos aparte; ahora se cede el control entre páginas). No se han movido a hilos aparte la lectura de Office/correo.
+
+## Novedades v0.12
+- **Versiones de la copia**: en la carpeta de datos se guardan instantáneas comprimidas del índice (`versions/`, las últimas 7; una automática cada 6 h al guardar y otra manual con «Guardar versión ahora»). «Restaurar esta versión» vuelve atrás (antes guarda una versión de seguridad del estado actual). No incluyen los originales.
+- **Requisitos vinculados**: cada requisito puede vincularse a equipos, sistemas, planos o cálculos (✎ en «Vinculado a»), con responsable y fecha límite. Vista «por vinculación» (cuántos abiertos hay en cada sistema), filtros de abiertos/vencidos/próximos 14 días y aviso de vencidos en el panel. Salen en el informe y en el .xlsx de requisitos.
+- **Comparar versiones**: marca 2 documentos en la tabla y pulsa «Comparar versiones»: líneas añadidas/eliminadas y valores técnicos que cambian (literal, sin interpretar). Descargable en .xlsx.
+- **Comprobar integridad**: detecta documentos de carpeta modificados o desaparecidos y originales importados que no están en este navegador; ofrece reindexar o eliminar.
+
+## Novedades v0.13 (según tu fichero de feedback)
+- **OCR automático también en imágenes incrustadas** en Word, Excel y PowerPoint (capturas, fotos de planos…): se extraen y se les pasa OCR solas, como los adjuntos de un correo (las muy pequeñas —logos, firmas— se omiten).
+- **Duplicados en bloque**: en «Documentos» → «Quitar todos los duplicados del registro» (solo limpia el registro, no toca archivos) y «Borrar del disco los archivos duplicados…» (borra de verdad los archivos idénticos a otro ya indexado; pide confirmación con la lista y comprueba que la copia que se conserva existe).
+- **Scroll vertical** en la tabla de documentos, en el registro de errores/duplicados, resultados, requisitos, etc.
+- **Una pantalla de altura**: pestañas (Inicio · Buscar · Requisitos · Informes · Documentos · Datos y copias); cabecera y pestañas fijas, cada pestaña se desplaza por dentro. Los avisos salen como mensajes flotantes aunque estés en otra pestaña.
+- **Carpeta de datos mínima**: antes creaba `docs/`, `blobs/` y `pimg/`. Ahora guarda un único archivo `feedback-datos.fbd` (índice comprimido), la carpeta `versions/` (versiones) y `originales/` **solo** si importas archivos a mano. Las imágenes procesadas ya no se guardan en disco (se regeneran al reindexar). Una copia antigua se migra sola al guardar y borra `docs/`, `blobs/`, `pimg/` y los json sueltos.
+- **Seguridad del repositorio**: `.gitignore` bloquea además `*.fbd`, `*.fbv`, `*.fbk`, `docs/`, `blobs/`, `pimg/`, `originales/`, `versions/` y los formatos de correo/Office. Si elegiste esta carpeta como carpeta de datos, esos archivos no se suben.

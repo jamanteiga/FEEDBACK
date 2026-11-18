@@ -24,44 +24,61 @@ export function initPanels(c) {
   async function addReq({ docId, pageNo, text, status = 'pendiente', group = '', note = '' }) {
     text = (text || '').replace(/\s+/g, ' ').trim(); if (!text) return null;
     if (Extras.d.reqs.some(r => r.docId === docId && r.pageNo === pageNo && r.text === text)) return null;
-    const r = { id: Extras.d.nextReq++, docId, pageNo, text: text.slice(0, 1000), status, group, note, at: new Date().toISOString(), by: Extras.user() };
+    const r = { id: Extras.d.nextReq++, docId, pageNo, text: text.slice(0, 1000), status, group, note, link: '', owner: '', due: '', at: new Date().toISOString(), by: Extras.user() };
     Extras.d.reqs.push(r); await Extras.log('Requisito añadido', docName(docId) || '', `${status}: ${text.slice(0, 80)}`); return r;
   }
-  async function renderReqs() {
-    const fs = $('#rq-status').value, ft = normTerm($('#rq-txt').value.trim());
-    let rs = reqsInProj().filter(r => (!fs || r.status === fs) && (!ft || normTerm(r.text + ' ' + (r.group || '') + ' ' + (r.note || '')).includes(ft)));
-    $('#rq-count').textContent = `${rs.length} de ${reqsInProj().length}`;
-    $('#reqs').innerHTML = rs.length ? `<table><tr><th>#</th><th>Requisito (texto literal)</th><th>Origen</th><th>Estado</th><th>Concepto</th><th>Nota</th><th></th></tr>` + rs.map(r => {
-      const d = docsById.get(r.docId);
-      return `<tr><td>${r.id}</td><td>${esc(r.text.length > 320 ? r.text.slice(0, 317) + '…' : r.text)}</td>
+  const today = () => new Date().toISOString().slice(0, 10), open = r => r.status === 'pendiente' || r.status === 'conflicto';
+  const overdue = r => open(r) && r.due && r.due < today();
+  const reqRow = r => {
+    const d = docsById.get(r.docId);
+    return `<tr><td>${r.id}</td><td>${esc(r.text.length > 320 ? r.text.slice(0, 317) + '…' : r.text)}</td>
       <td>${d ? `<a href="#" data-detail="${r.docId}" data-page="${r.pageNo}">${esc(docName(r.docId))}</a> <span class="m">pág. ${r.pageNo}</span>` : '<span class="tag warn">origen eliminado</span>'}</td>
       <td><select data-reqstatus="${r.id}">${STATUS.map(s => `<option ${s === r.status ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
-      <td>${esc(r.group || '')} <a href="#" data-reqgroup="${r.id}" title="Editar concepto">✎</a></td><td>${esc(r.note || '')} <a href="#" data-reqnote="${r.id}" title="Editar nota">✎</a></td>
-      <td><a href="#" data-reqdel="${r.id}" title="Eliminar requisito">✕</a></td></tr>`;
-    }).join('') + '</table>' : '<div class="empty">Sin requisitos. Selecciona texto en el detalle de un documento y pulsa «Añadir selección como requisito», o añádelos desde la revisión de valores.</div>';
+      <td>${esc(r.group || '')} <a href="#" data-reqgroup="${r.id}" title="Editar concepto">✎</a></td>
+      <td>${esc(r.link || '')} <a href="#" data-reqlink="${r.id}" title="Vincular a equipo, sistema, plano o cálculo (separa varios con comas)">✎</a></td>
+      <td>${esc(r.owner || '')} <a href="#" data-reqowner="${r.id}" title="Responsable">✎</a><br><input type="date" data-reqdue="${r.id}" value="${esc(r.due || '')}" style="padding:2px 4px;font-size:12px;${overdue(r) ? 'border-color:#b42318;color:#b42318' : ''}" title="Fecha límite"></td>
+      <td>${esc(r.note || '')} <a href="#" data-reqnote="${r.id}" title="Editar nota">✎</a></td><td><a href="#" data-reqdel="${r.id}" title="Eliminar requisito">✕</a></td></tr>`;
+  };
+  const HEAD = '<tr><th>#</th><th>Requisito (texto literal)</th><th>Origen</th><th>Estado</th><th>Concepto</th><th>Vinculado a</th><th>Resp. / vence</th><th>Nota</th><th></th></tr>';
+  async function renderReqs() {
+    const fs = $('#rq-status').value, ft = normTerm($('#rq-txt').value.trim()), fd = $('#rq-due').value, view = $('#rq-view').value, t0 = today(), t14 = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10);
+    const rs = reqsInProj().filter(r => (!fs || (fs === 'abiertos' ? open(r) : r.status === fs)) && (!ft || normTerm([r.text, r.group, r.note, r.link, r.owner].join(' ')).includes(ft))
+      && (!fd || (fd === 'vencidos' ? overdue(r) : fd === 'proximos' ? open(r) && r.due && r.due >= t0 && r.due <= t14 : !r.due)));
+    const nOver = reqsInProj().filter(overdue).length;
+    $('#rq-count').textContent = `${rs.length} de ${reqsInProj().length}${nOver ? ` · ${nOver} vencido(s)` : ''}`;
+    if (!rs.length) { $('#reqs').innerHTML = '<div class="empty">Sin requisitos. Selecciona texto en el detalle de un documento y pulsa «Añadir selección como requisito», o añádelos desde la revisión de valores.</div>'; return; }
+    if (view !== 'sistema') { $('#reqs').innerHTML = `<table>${HEAD}${rs.map(reqRow).join('')}</table>`; return; }
+    const g = new Map(); for (const r of rs) for (const k of (r.link ? r.link.split(',').map(x => x.trim()).filter(Boolean) : ['(sin vincular)'])) (g.get(k) || g.set(k, []).get(k)).push(r);
+    $('#reqs').innerHTML = [...g].sort((a, b) => a[0].localeCompare(b[0], 'es')).map(([k, l]) => {
+      const ab = l.filter(open).length; return `<details open style="margin-top:6px"><summary><b>${esc(k)}</b> — ${l.length} requisito(s) · <span class="${ab ? 'tag warn' : 'tag'}">${ab} abierto(s)</span>${l.some(overdue) ? ' <span class="tag warn">hay vencidos</span>' : ''}</summary><table>${HEAD}${l.map(reqRow).join('')}</table></details>`;
+    }).join('');
   }
   const reqById = id => Extras.d.reqs.find(r => r.id === id);
   async function changed() { await Extras.save(); await renderReqs(); c.renderDash?.(); await refreshReport(); }
   document.addEventListener('change', async e => {
+    const dd = e.target.closest('[data-reqdue]');
+    if (dd) { const r = reqById(+dd.dataset.reqdue); if (!r) return; r.due = dd.value; await Extras.log('Fecha límite de requisito', `#${r.id}`, r.due); return changed(); }
     const s = e.target.closest('[data-reqstatus]'); if (!s) return;
     const r = reqById(+s.dataset.reqstatus); if (!r) return; const old = r.status; r.status = s.value;
     await Extras.log('Estado de requisito', `#${r.id}`, `${old} → ${r.status}`); await changed();
   });
   document.addEventListener('click', async e => {
-    const t = e.target.closest('[data-reqdel],[data-reqnote],[data-reqgroup],[data-reqmark],#rq-add'); if (!t) return;
+    const t = e.target.closest('[data-reqdel],[data-reqnote],[data-reqgroup],[data-reqlink],[data-reqowner],[data-reqmark],#rq-add'); if (!t) return;
     e.preventDefault();
     if (t.id === 'rq-add') return;
     if (t.dataset.reqmark) { const m = await DB.get('marks', +t.dataset.reqmark); const r = await addReq({ docId: m.docId, pageNo: m.pageNo, text: m.text }); await changed(); return addMsg(r ? 'ok' : 'duplicado', r ? 'Añadido a requisitos.' : 'Ese texto ya está en requisitos.'); }
-    const r = reqById(+(t.dataset.reqdel || t.dataset.reqnote || t.dataset.reqgroup)); if (!r) return;
+    const r = reqById(+(t.dataset.reqdel || t.dataset.reqnote || t.dataset.reqgroup || t.dataset.reqlink || t.dataset.reqowner)); if (!r) return;
     if (t.dataset.reqdel) { if (!confirm('¿Eliminar este requisito de la lista?')) return; Extras.d.reqs = Extras.d.reqs.filter(x => x !== r); await Extras.log('Requisito eliminado', `#${r.id}`); }
     else if (t.dataset.reqnote) { const n = prompt('Nota:', r.note || ''); if (n === null) return; r.note = n.trim(); await Extras.log('Nota de requisito', `#${r.id}`); }
+    else if (t.dataset.reqlink) { const n = prompt('Vincular a (equipo, sistema, plano, cálculo…; varios separados por comas). Ej.: VEN-101, Cocina – extracción', r.link || ''); if (n === null) return; r.link = n.split(',').map(x => x.trim()).filter(Boolean).join(', '); await Extras.log('Requisito vinculado', `#${r.id}`, r.link); }
+    else if (t.dataset.reqowner) { const n = prompt('Responsable:', r.owner || ''); if (n === null) return; r.owner = n.trim(); await Extras.log('Responsable de requisito', `#${r.id}`, r.owner); }
     else { const n = prompt('Concepto / sistema al que se refiere (p. ej. «Cocina – extracción»):', r.group || ''); if (n === null) return; r.group = n.trim(); await Extras.log('Concepto de requisito', `#${r.id}`, r.group); }
     await changed();
   });
-  for (const id of ['rq-status', 'rq-txt']) $('#' + id).oninput = renderReqs;
+  for (const id of ['rq-status', 'rq-txt', 'rq-due', 'rq-view']) $('#' + id).oninput = renderReqs;
   $('#rq-xlsx').onclick = () => {
     const rs = reqsInProj(); if (!rs.length) return addMsg('error', 'No hay requisitos que exportar.');
-    download(packXlsx([{ name: 'Requisitos', widths: [6, 70, 34, 8, 14, 26, 28, 18], rows: [['#', 'Requisito (literal)', 'Documento', 'Pág.', 'Estado', 'Concepto', 'Nota', 'Añadido'], ...rs.map(r => [r.id, r.text, docName(r.docId) || '(origen eliminado)', r.pageNo, r.status, r.group || '', r.note || '', fdate(r.at)])] }]), `feedback-requisitos-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    download(packXlsx([{ name: 'Requisitos', widths: [6, 70, 34, 8, 14, 26, 26, 18, 12, 28, 18], rows: [['#', 'Requisito (literal)', 'Documento', 'Pág.', 'Estado', 'Concepto', 'Vinculado a', 'Responsable', 'Vence', 'Nota', 'Añadido'], ...rs.map(r => [r.id, r.text, docName(r.docId) || '(origen eliminado)', r.pageNo, r.status, r.group || '', r.link || '', r.owner || '', r.due || '', r.note || '', fdate(r.at)])] }]), `feedback-requisitos-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   // ---------- revisión de valores y discrepancias ----------
@@ -164,5 +181,5 @@ export function initPanels(c) {
     await renderOcr();
   });
 
-  return { renderOcr, renderReqs, renderRv, updateBadges, renderThreads, addReq, reqsInProj, changed, STATUS };
+  return { overdueCount: () => reqsInProj().filter(overdue).length, renderOcr, renderReqs, renderRv, updateBadges, renderThreads, addReq, reqsInProj, changed, STATUS };
 }
