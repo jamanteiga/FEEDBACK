@@ -12,6 +12,7 @@ import { compareDocs, hunks } from './compare.js';
 import { parseValueQuery, matchValues, equiv } from './units.js';
 import { CHK, chkLabel, chkDone, famKey, revOf, revGroups, buildMatrix } from './trace.js';
 import { Lock } from './lock.js';
+import { es } from './es.js';
 import { DOC_EXT, CAD_EXT, LEGACY_EXT, FORMAT_NAME } from './extract.js';
 
 const $ = s => document.querySelector(s);
@@ -63,6 +64,7 @@ function fillProjects() {
 // ---- estado / mensajes ----
 const setStatus = (t, cls = '') => { const e = $('#status'); e.className = 'msg ' + cls; e.textContent = t; e.hidden = !t; const b = $('#busy'); if (b) b.textContent = t ? '⏳ ' + t.slice(0, 80) : ''; };
 const addMsg = (cls, html) => {
+  if (cls === 'error') html = es(html);
   $('#upmsgs').insertAdjacentHTML('afterbegin', `<div class="msg ${cls}">${html}</div>`);
   if (!$('#toasts')) return;   // aviso flotante: se ve aunque estés en otra pestaña
   const t = document.createElement('div'); t.className = 'msg ' + cls; t.innerHTML = html; t.onclick = () => t.remove(); $('#toasts').appendChild(t);
@@ -157,7 +159,7 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent, roo
     await DB.addLog('info', name, msg);
     return { status: 'ok', msg, docId: doc.id };
   } catch (e) {
-    doc.status = 'error'; doc.error = String(e.message || e); await DB.put('docs', doc); docsById.set(doc.id, doc);
+    doc.status = 'error'; doc.error = es(e.message || e); await DB.put('docs', doc); docsById.set(doc.id, doc);
     await DB.addLog('error', name, `Fallo de procesamiento: ${doc.error}`);
     return { status: 'error', msg: `Fallo de procesamiento: ${doc.error}` };
   }
@@ -794,7 +796,7 @@ async function deleteDupFiles() {
       if (!perm.has(r.id)) perm.set(r.id, (await r.handle.requestPermission({ mode: 'readwrite' })) === 'granted'); if (!perm.get(r.id)) throw new Error('sin permiso de escritura');
       if (keep.source === 'carpeta') { const kr = roots.get(keep.rootId); if (!kr?.handle) throw new Error('no se puede verificar la copia que se conserva'); let kh = kr.handle; for (const s of keep.path.slice(0, -1)) kh = await kh.getDirectoryHandle(s); const kf = await (await kh.getFileHandle(keep.path.at(-1))).getFile(); if (kf.size !== keep.size) throw new Error('la copia que se conserva ha cambiado'); }
       let dh = r.handle; for (const s of d.path.slice(0, -1)) dh = await dh.getDirectoryHandle(s); await dh.removeEntry(d.path.at(-1)); await removeDoc(d.id); ok++;
-    } catch (e) { fail++; await DB.addLog('error', d.path.join('/'), 'No se pudo borrar el duplicado: ' + e.message); }
+    } catch (e) { fail++; await DB.addLog('error', d.path.join('/'), 'No se pudo borrar el duplicado: ' + es(e.message)); }
   }
   for (const l of (await DB.all('log')).filter(l => l.level === 'duplicado')) await DB.del('log', l.id);
   await Extras.log('Duplicados borrados del disco', `${ok} archivo(s)`, fail ? `${fail} con error` : ''); addMsg(fail ? 'duplicado' : 'ok', `${ok} duplicado(s) borrados del disco${fail ? ` · ${fail} no se pudieron borrar (ver registro)` : ''}.`); await afterChange();
@@ -1009,6 +1011,10 @@ $('#trash-empty').onclick = async () => {
   const t = [...docsById.values()].filter(d => d.status === 'papelera' && !d.trashedWith && inProj(d)); if (!t.length || !confirm(`¿Eliminar definitivamente los ${t.length} documento(s) de la papelera? No se podrán recuperar.`)) return;
   for (const d of t) await purgeNow(d.id); await Extras.log('Papelera vaciada', `${t.length} documento(s)`); await afterChange();
 };
+
+// ---- errores no controlados: siempre en castellano ----
+addEventListener('error', e => { if (e.message && !/ResizeObserver/.test(e.message)) addMsg('error', 'Error inesperado: ' + esc(es(e.message))); });
+addEventListener('unhandledrejection', e => { const m = e.reason?.message || String(e.reason || ''); if (m) addMsg('error', 'Error inesperado: ' + esc(es(m))); });
 
 // ---- arranque ----
 (async () => {

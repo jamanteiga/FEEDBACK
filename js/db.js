@@ -1,6 +1,7 @@
 // Almacén local (IndexedDB). Todo queda en este navegador y este equipo.
 // Con contraseña activada, cada registro se guarda cifrado (_enc); solo quedan en claro las claves de acceso (ids) y un índice ciego (HMAC) para detectar duplicados.
 import { Vault } from './vault.js';
+import { es } from './es.js';
 const te = new TextEncoder(), td = new TextDecoder();
 const PLAIN = { docs: ['id'], pages: ['docId', 'pageNo'], marks: ['id', 'docId'], log: ['id'] };
 async function pack(s, v, k, K = Vault) {
@@ -68,7 +69,7 @@ export const DB = {
   },
 
   async addLog(level, filename, message) {
-    await this.put('log', { at: new Date().toISOString(), level, filename, message });
+    await this.put('log', { at: new Date().toISOString(), level, filename, message: level === 'error' ? es(message) : message });
   },
 
   async deleteDoc(id) {

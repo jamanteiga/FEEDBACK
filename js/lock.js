@@ -2,6 +2,7 @@
 import { DB } from './db.js';
 import { Vault, b64, unb64 } from './vault.js';
 import { Store } from './store.js';
+import { es } from './es.js';
 const $ = s => document.querySelector(s), OK = new TextEncoder().encode('FEEDBACK-OK');
 const getLock = () => DB.get('meta', 'lock');
 const say = (id, t, err) => { const e = $(id); if (e) { e.textContent = t; e.className = 'msg ' + (err ? 'error' : 'info'); e.hidden = !t; } };
@@ -38,7 +39,7 @@ export const Lock = {
     const run = async (fn, okMsg) => {
       busy(true, 'Procesando… no cierres la pestaña.');
       try { await fn(); await diskRewrite(); say('#lk-msg', okMsg); await refresh(); }
-      catch (e) { say('#lk-msg', e.message || String(e), true); }
+      catch (e) { say('#lk-msg', es(e.message || String(e)), true); }
       busy(false); for (const i of ['#lk-old', '#lk-new', '#lk-new2']) $(i).value = '';
     };
     const checkOld = async lk => { const k = await Vault.derive($('#lk-old').value, unb64(lk.salt)); try { await Vault.open(unb64(lk.check), k); } catch { throw new Error('La contraseña actual no es correcta.'); } return k; };
