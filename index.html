@@ -10,7 +10,7 @@
 <link rel="icon" href="icon-192.png">
 </head>
 <body>
-<header><h1>FEEDBACK</h1><span>Documentación técnica · todo se procesa y guarda en este equipo</span><div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><select id="proj" title="Proyecto activo"></select><button id="projnew" class="sec" title="Nuevo proyecto">＋</button><input id="user" placeholder="Usuario / equipo" title="Se anota en el registro de cambios" style="width:140px"><button id="theme" class="sec" title="Modo claro/oscuro">🌙</button></div></header>
+<header><h1>FEEDBACK</h1><span>Documentación técnica · todo se procesa y guarda en este equipo</span><div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><select id="proj" title="Proyecto activo"></select><button id="projnew" class="sec" title="Nuevo proyecto">＋</button><input id="user" placeholder="Usuario / equipo" title="Se anota en el registro de cambios" style="width:140px"><button id="helpbtn" class="sec" title="Atajos de teclado (?)" onclick="document.getElementById('help').showModal()">?</button><button id="theme" class="sec" title="Modo claro/oscuro">🌙</button></div></header>
 <nav id="tabs"><button class="tab" data-go="inicio">Inicio</button><button class="tab" data-go="buscar">Buscar</button><button class="tab" data-go="requisitos">Requisitos</button><button class="tab" data-go="informes">Informes</button><button class="tab" data-go="documentos">Documentos</button><button class="tab" data-go="datos">Datos y copias</button><span id="busy" class="m"></span></nav>
 <main>
 
@@ -33,24 +33,27 @@
 <section class="card" data-tab="inicio">
   <h2>2 · Incorporar archivos sueltos</h2>
   <div id="drop" tabindex="0">
-    <b>Arrastra aquí PDF, imágenes, Word/Excel/PowerPoint o correos guardados (.msg / .eml)</b> · pega una imagen con <b>Ctrl+V</b> · o haz clic para seleccionar
+    <b>Arrastra aquí PDF, imágenes, Word (.doc/.docx), Excel (.xls/.xlsx), PowerPoint, planos (.dwg/.dxf/.dgn), correos guardados (.msg / .eml) o una carpeta entera</b> · pega una imagen con <b>Ctrl+V</b> · o haz clic para seleccionar
     <small>PDF, JPG, PNG, TIFF, los correos deben estar guardados como archivo (no se pueden arrastrar directamente desde Outlook); se indexan también sus adjuntos PDF/imagen · se guarda una copia del original sin modificar en este navegador</small>
   </div>
-  <input id="file" type="file" multiple hidden accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.msg,.eml,.docx,.xlsx,.pptx,.txt,.csv,.html,.htm,.rtf,.zip">
+  <div class="row" style="margin-top:6px"><button id="pickdir" type="button" class="sec">Importar una carpeta entera…</button><span class="m">Copia los archivos admitidos (con subcarpetas) al navegador; para seguir una carpeta del disco sin copiarla usa «Añadir carpeta…».</span></div>
+  <div id="prog" class="row" hidden style="margin-top:6px"><progress id="progbar" max="1" value="0" style="flex:1;min-width:200px"></progress><span id="progtxt" class="m"></span><button id="prog-cancel" type="button" class="sec">Cancelar</button></div>
+  <input id="dirfile" type="file" webkitdirectory multiple hidden>
+  <input id="file" type="file" multiple hidden accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.msg,.eml,.doc,.docx,.xls,.xlsx,.pptx,.dwg,.dxf,.dgn,.txt,.csv,.html,.htm,.rtf,.zip">
   <div id="upmsgs"></div>
 </section>
 
 <section class="card" data-tab="buscar">
   <h2>3 · Buscar</h2>
   <form id="sf" class="row">
-    <input type="search" id="q" placeholder='Texto a buscar (usa "comillas" para una frase)'>
+    <input type="search" id="q" placeholder='Texto o valor: «caudal > 5000 m3/h», «presión 100-300 Pa», "frase exacta"'>
     <input type="search" id="asunto" placeholder="Asunto contiene…" style="min-width:150px;flex:0 1 170px"><input type="search" id="etiqueta" placeholder="Título/etiqueta contiene…" style="min-width:150px;flex:0 1 170px"><input type="search" id="remitente" placeholder="Remitente contiene…" style="min-width:150px;flex:0 1 170px">
-    <select id="kind"><option value="">Todos los tipos</option><option value="pdf">PDF</option><option value="imagen">Imagen</option><option value="correo">Correo</option><option value="documento">Word/Excel/PowerPoint/texto</option></select>
+    <select id="kind"><option value="">Todos los tipos</option><option value="pdf">PDF</option><option value="imagen">Imagen</option><option value="correo">Correo</option><option value="documento">Word/Excel/PowerPoint/texto</option><option value="plano">Planos CAD (DWG/DXF/DGN)</option></select>
     <input type="date" id="desde" title="Fecha del archivo o correo desde"><input type="date" id="hasta" title="Fecha del archivo o correo hasta">
     <button>Buscar</button>
   </form>
   <div class="row" style="margin:4px 0"><select id="ss" title="Búsquedas guardadas (indica los documentos nuevos desde la última vez)"><option value="">Búsquedas guardadas…</option></select><button type="button" id="ss-save" class="sec">Guardar esta búsqueda</button><button type="button" id="ss-del" class="sec">Borrar</button>
-    <select id="sort"><option value="rel">Orden: relevancia</option><option value="fecha-desc">Fecha: más recientes</option><option value="fecha-asc">Fecha: más antiguos</option></select><label class="m"><input type="checkbox" id="grp"> agrupar por documento</label><span id="rescount" class="m"></span></div>
+    <select id="sort"><option value="rel">Orden: relevancia</option><option value="fecha-desc">Fecha: más recientes</option><option value="fecha-asc">Fecha: más antiguos</option></select><label class="m"><input type="checkbox" id="grp"> agrupar por documento</label><label class="m" title="Encuentra palabras con letras mal leídas por el OCR (p. ej. «ventiIador»)"><input type="checkbox" id="fz"> tolerar erratas (OCR)</label><label class="m" title="Oculta los documentos que has marcado como sustituidos por una revisión posterior"><input type="checkbox" id="sust"> ocultar sustituidos</label><span id="rescount" class="m"></span></div>
   <div class="row" style="margin:4px 0"><button type="button" id="export2" class="sec" title="Guarda en un .json todo el índice: documentos, texto extraído/corregido, etiquetas, notas y puntos marcados">💾 Guardar índice completo (.json)</button><span class="m">Contiene textos, etiquetas, notas y marcas (no los archivos originales). Se importa en otro equipo con «Importar índice…».</span></div>
   <div id="results"></div>
 </section>
@@ -73,6 +76,7 @@
   </div>
   <details style="margin-top:8px"><summary><b>Plantilla del informe</b> <span class="m">(cabecera con logotipo, nº de proyecto y revisión; se recuerda por proyecto)</span></summary>
     <div class="row" style="margin-top:6px"><label class="m">Empresa <input id="rc-co"></label><label class="m">Nº de proyecto <input id="rc-no"></label><label class="m">Revisión <input id="rc-rev" style="width:70px"></label><button type="button" id="rc-revup" class="sec" title="Suma 1 a la revisión (A→B, 0→1…)">Nueva revisión</button><label class="m">Elaborado por <input id="rc-au"></label></div>
+    <div class="row" style="margin-top:6px"><label class="m">Marca de agua <input id="rc-wm" list="wm-list" placeholder="(ninguna)" style="width:190px"></label><datalist id="wm-list"><option value="BORRADOR"><option value="PARA REVISIÓN"><option value="COPIA NO CONTROLADA"><option value="CONFIDENCIAL"></datalist><label class="m">Clasificación / marcado <input id="rc-cl" placeholder="p. ej. DIFUSIÓN LIMITADA" style="width:220px"></label><span class="m">La marca de agua va en diagonal en cada página; la clasificación, arriba y abajo de cada página. Todos los informes numeran sus páginas.</span></div>
     <div class="row" style="margin-top:6px"><label class="m">Logotipo <input id="rc-logo" type="file" accept="image/*"></label><button type="button" id="rc-logoclear" class="sec">Quitar logotipo</button><span id="rc-logoprev"></span></div>
   </details>
 </section>
@@ -94,6 +98,12 @@
   <details style="margin-top:10px"><summary><b>Hilos de correo</b> <span class="m">(correos agrupados por asunto)</span></summary><div id="threads"></div></details>
 </section>
 
+<section class="card" id="mxcard" data-tab="requisitos">
+  <h2>7 · Matriz de trazabilidad</h2>
+  <div class="row"><button id="mx-go">Generar matriz</button><button id="mx-xlsx" class="sec" disabled>Exportar a Excel</button><span class="m">Para cada requisito: su origen, estado, otros documentos donde aparece el mismo texto y menciones relacionadas. El Excel incluye además la lista de comprobación de todos los documentos.</span></div>
+  <div id="mx" style="max-height:420px;overflow:auto;margin-top:6px"></div>
+</section>
+
 <section class="card" id="cmpcard" hidden data-tab="documentos">
   <h2>Comparación de versiones</h2><div class="row"><button class="sec" onclick="document.getElementById('cmpcard').hidden=true">Cerrar</button></div>
   <div id="cmp"></div>
@@ -110,6 +120,8 @@
   <div class="row" style="margin-bottom:4px"><button id="bulk-del" class="sec" disabled>Eliminar seleccionados del índice (0)</button><button id="cmp-btn" class="sec" disabled>Comparar versiones (0/2)</button><button id="integ-btn" class="sec">Comprobar integridad</button><span class="m">Marca las casillas de la tabla; también puedes editar, reindexar o eliminar fila a fila en «Acciones».</span></div>
   <div id="integ"></div>
   <div id="docs"></div>
+  <details style="margin-top:12px"><summary><b>Revisiones detectadas</b> <span class="m">(el mismo documento con Rev. A/B, v1/v2…)</span></summary><div id="revs"></div></details>
+  <details style="margin-top:8px"><summary><b>🗑 Papelera</b> <span id="trash-n" class="m"></span> <span class="m">(los documentos eliminados se conservan 30 días)</span></summary><div class="row" style="margin:6px 0"><button id="trash-empty" class="sec danger" disabled>Vaciar papelera</button></div><div id="trash"></div></details>
   <div class="row" style="margin-top:14px"><h2 style="margin:0">Registro de errores y duplicados</h2><button id="dup-clear" class="sec">Quitar todos los duplicados del registro</button><button id="dup-disk" class="sec danger">Borrar del disco los archivos duplicados…</button></div>
   <div id="log"></div>
 </section>
@@ -138,10 +150,30 @@
     <button id="export-enc" class="sec" title="Igual que el .json, pero cifrado con AES-256 y contraseña">🔒 Guardar índice cifrado (.fbk)</button>
     <button id="wipe" class="sec danger">Vaciar índice y copia en disco</button>
   </div>
-  <p class="m">La exportación no incluye los originales importados. Para importar un .fbk escribe antes la contraseña. Atajos: <b>/</b> buscar · <b>Alt+R</b> informe de resultados · <b>Alt+G</b> guardar índice · <b>Esc</b> cerrar detalle.</p>
+  <h2 style="margin-top:16px">Contraseña de la aplicación (opcional)</h2>
+  <div id="lockcfg">
+    <p class="m" id="lk-state" style="margin:0 0 6px"></p>
+    <div class="row"><input id="lk-old" type="password" placeholder="Contraseña actual" style="width:160px" autocomplete="current-password"><input id="lk-new" type="password" placeholder="Nueva contraseña (mín. 8)" style="width:190px" autocomplete="new-password"><input id="lk-new2" type="password" placeholder="Repetir nueva" style="width:150px" autocomplete="new-password"><button id="lk-set" class="sec">Activar contraseña</button><button id="lk-off" class="sec" hidden>Quitar contraseña</button><button id="lk-now" class="sec" hidden>🔒 Bloquear ahora</button><label class="m" id="lk-idlew" hidden>Bloqueo automático <select id="lk-idle" style="padding:3px 6px"><option value="0">nunca</option><option value="5">tras 5 min</option><option value="15">tras 15 min</option><option value="60">tras 1 h</option></select></label></div>
+    <div id="lk-busy" class="msg info" hidden style="margin-top:6px"></div><div id="lk-msg" class="msg info" hidden style="margin-top:6px"></div>
+  </div>
+  <p class="m">Cifra con AES-256 (clave derivada con PBKDF2) el índice, el texto, las marcas y los archivos importados guardados en este navegador y también la copia de la carpeta de datos. <b>Sin la contraseña no hay recuperación.</b> No cifra los originales de tus carpetas de documentos (están en tu disco, fuera de la aplicación) ni los nombres de las carpetas añadidas.</p>
+  <p class="m">La exportación no incluye los originales importados. Para importar un .fbk escribe antes la contraseña. Atajos: <b>/</b> buscar · <b>↓↑</b> resultados · <b>Alt+1…6</b> pestañas · <b>Alt+R</b> informe · <b>Alt+G</b> guardar índice · <b>Esc</b> cerrar · <b>?</b> ayuda completa.</p>
 </section>
 </main>
 <div id="toasts"></div>
+<div id="lock" hidden><form id="lk-form" autocomplete="off"><h2>🔐 FEEDBACK</h2><p class="m">Los datos de este equipo están cifrados. Escribe la contraseña para abrir la aplicación.</p><input id="lk-pass" type="password" placeholder="Contraseña" autocomplete="current-password"><button id="lk-go" type="submit">Desbloquear</button><div id="lk-err" class="msg error" hidden></div><a href="#" id="lk-forgot" class="m" onclick="return false">He olvidado la contraseña (borrar todo y empezar de cero)</a></form></div>
+<dialog id="help"><h2 style="margin-top:0">Atajos de teclado</h2><table>
+<tr><td><kbd>/</kbd></td><td>Ir a Buscar y escribir</td></tr>
+<tr><td><kbd>↓</kbd> <kbd>↑</kbd> o <kbd>j</kbd> <kbd>k</kbd></td><td>Moverse por los resultados (↓ desde el cuadro de búsqueda)</td></tr>
+<tr><td><kbd>Intro</kbd></td><td>Ver/editar el resultado seleccionado</td></tr>
+<tr><td><kbd>o</kbd></td><td>Abrir el original (PDF con el visor)</td></tr>
+<tr><td><kbd>s</kbd></td><td>Más como este (páginas parecidas)</td></tr>
+<tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>Parte anterior / siguiente del documento abierto</td></tr>
+<tr><td><kbd>Alt</kbd>+<kbd>1</kbd>…<kbd>6</kbd></td><td>Cambiar de pestaña</td></tr>
+<tr><td><kbd>Alt</kbd>+<kbd>R</kbd></td><td>Informe de los resultados</td></tr>
+<tr><td><kbd>Alt</kbd>+<kbd>G</kbd></td><td>Guardar el índice (.json)</td></tr>
+<tr><td><kbd>Esc</kbd></td><td>Cerrar detalle o este cuadro</td></tr>
+<tr><td><kbd>?</kbd></td><td>Mostrar esta ayuda</td></tr></table><form method="dialog" style="margin-top:10px"><button>Cerrar</button></form></dialog>
 
 <script src="vendor/pako.min.js"></script>
 <script src="vendor/UTIF.js"></script>

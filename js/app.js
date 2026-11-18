@@ -1,4 +1,4 @@
-import { embeddedImages } from './extract.js';
+import { parseDoc, parseMail } from './parse.js';
 import { DB } from './db.js';
 import { sha256, processPdf, processImage } from './proc.js';
 import { buildModel, renderHtml } from './report.js';
@@ -9,7 +9,10 @@ import { packXlsx } from './export.js';
 import { initPanels, synVariants } from './panels.js';
 import { openViewer } from './viewer.js';
 import { compareDocs, hunks } from './compare.js';
-import { DOC_EXT, LEGACY_EXT, extractDocument, zipEntries, htmlToText, FORMAT_NAME } from './extract.js';
+import { parseValueQuery, matchValues, equiv } from './units.js';
+import { CHK, chkLabel, chkDone, famKey, revOf, revGroups, buildMatrix } from './trace.js';
+import { Lock } from './lock.js';
+import { DOC_EXT, CAD_EXT, LEGACY_EXT, FORMAT_NAME } from './extract.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -74,28 +77,7 @@ function goTab(name) {
 document.querySelectorAll('#tabs .tab').forEach(b => b.onclick = () => goTab(b.dataset.go));
 goTab(localStorage.getItem('fb-tab') || 'inicio');
 
-// ---- correos (.eml / .msg) ----
-const addr = a => a ? (a.name && a.address ? `${a.name} <${a.address}>` : (a.address || a.name || '')) : '';
-async function parseEmail(ext, buf) {
-  let r;
-  if (ext === 'eml') {
-    const e = await new EmailLibs.PostalMime().parse(buf);
-    r = { subject: e.subject || '', from: addr(e.from), to: (e.to || []).map(addr).join('; '), cc: (e.cc || []).map(addr).join('; '),
-      date: e.date ? new Date(e.date).toISOString() : null, text: e.text || '', html: e.html || '',
-      atts: (e.attachments || []).map(a => ({ name: a.filename || 'adjunto', mime: a.mimeType || '', bytes: new Uint8Array(a.content), inline: a.disposition === 'inline' || !!a.related })) };
-  } else {
-    const m = new EmailLibs.MsgReader(buf), f = m.getFileData();
-    const rec = (f.recipients || []).map(x => x.name && x.email && x.name !== x.email ? `${x.name} <${x.email}>` : (x.email || x.name)).filter(Boolean);
-    const dt = f.messageDeliveryTime || f.clientSubmitTime || f.creationTime;
-    r = { subject: f.subject || '', from: f.senderName && f.senderEmail && f.senderName !== f.senderEmail ? `${f.senderName} <${f.senderEmail}>` : (f.senderEmail || f.senderName || ''),
-      to: rec.join('; '), cc: '', date: dt && !isNaN(new Date(dt)) ? new Date(dt).toISOString() : null, text: f.body || '', html: f.bodyHtml || '',
-      atts: (f.attachments || []).filter(a => !a.innerMsgContent).map(a => { const x = m.getAttachment(a); return { name: x.fileName || a.fileName || 'adjunto', mime: a.attachMimeTag || '', bytes: x.content, inline: !!(a.attachmentHidden || a.pidContentId) }; }) };
-  }
-  let method = 'cuerpo en texto plano', body = (r.text || '').trim();
-  if (body.length < 5 && r.html) { body = htmlToText(r.html); method = 'cuerpo convertido desde HTML'; }
-  r.body = body; r.method = method;
-  return r;
-}
+// ---- correos (.eml / .msg): se leen en js/mail.js (Web Worker) ----
 const mailText = r => [`Asunto: ${r.subject}`, `De: ${r.from}`, `Para: ${r.to}`, r.cc ? `CC: ${r.cc}` : null, `Fecha: ${r.date ? r.date.replace('T', ' ').slice(0, 16) : ''}`, '', r.body].filter(x => x !== null).join('\n');
 
 // ---- ingesta ----
@@ -107,7 +89,7 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent, roo
   const sha = await sha256(buf);
   const dups = await DB.byIndex('docs', 'sha', sha);
   const dup = dups.find(d => d.key !== key && d.status === 'ok');
-  const kind = PDF_EXT.includes(ext) ? 'pdf' : MAIL_EXT.includes(ext) ? 'correo' : DOC_EXT.includes(ext) ? 'documento' : 'imagen';
+  const kind = PDF_EXT.includes(ext) ? 'pdf' : MAIL_EXT.includes(ext) ? 'correo' : CAD_EXT.includes(ext) ? 'plano' : DOC_EXT.includes(ext) ? 'documento' : 'imagen';
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
   const doc = {
     sha256: sha, key, name, path: path || null, storedName: `${stamp}_${kind}_${sha.slice(0, 8)}.${ext}`,
@@ -128,17 +110,16 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent, roo
     const onP = t => setStatus(`${name}: ${t}`, 'info'), onS = t => setStatus(t, 'info');
     let pages, mailAtts = [];
     if (kind === 'correo') {
-      const m = await parseEmail(ext, buf);
+      const m = await parseMail(ext, buf);
       Object.assign(doc, { subject: keep?.subject || m.subject, sender: keep?.sender || m.from, to: keep?.to || m.to, emailDate: keep?.emailDate || m.date });
       pages = [{ pageNo: 1, method: 'correo', conf: null, text: mailText(m), steps: [{ step: 'extraccion_correo', detail: m.method }], processed: null }];
       mailAtts = m.atts;
-    } else if (kind === 'documento') {
+    } else if (kind === 'documento' || kind === 'plano') {
       const note = { step: 'extraccion_texto', detail: `${FORMAT_NAME[ext] || ext}: texto extraído directamente, sin convertir a PDF` };
-      if (ext === 'zip') {
-        const ents = zipEntries(buf);
-        pages = [{ pageNo: 1, label: '', method: 'documento', conf: null, text: 'Contenido del ZIP:\n' + ents.map(e => e.path).join('\n'), steps: [note], processed: null }];
-        mailAtts = ents.map(e => ({ name: e.name, mime: '', bytes: e.bytes, inline: false }));
-      } else { pages = extractDocument(ext, buf).map(x => ({ pageNo: x.pageNo, label: x.label, method: 'documento', conf: null, text: x.text, steps: [note], processed: null })); mailAtts = embeddedImages(ext, buf); }   // imágenes incrustadas: se les pasa OCR solas
+      setStatus(`${name}: leyendo ${FORMAT_NAME[ext] || ext}…`, 'info');
+      const r = await parseDoc(ext, buf.slice(0));   // en un hilo aparte: la pantalla no se bloquea
+      pages = r.pages.map(x => ({ pageNo: x.pageNo, label: x.label, method: kind === 'plano' ? 'plano' : 'documento', conf: null, text: x.text, steps: [note], processed: null }));
+      mailAtts = r.atts;   // ZIP: sus archivos · Word/Excel/PowerPoint: imágenes incrustadas (OCR automático)
     } else pages = kind === 'pdf' ? await processPdf(buf, onP, onS) : await processImage(file, buf, onP, onS);
     let low = 0; const mini_docs = [];
     for (const p of pages) {
@@ -150,7 +131,8 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent, roo
     }
     mini.addAll(mini_docs);
     doc.pages = pages.length; await DB.put('docs', doc); docsById.set(doc.id, doc);
-    let msg = kind === 'correo' ? 'Correo indexado' : kind === 'documento' ? `Indexado (${FORMAT_NAME[ext] || ext}, ${pages.length} ${pages.length === 1 ? 'parte' : 'partes'})` : `Indexado (${pages.length} pág.)`;
+    if (!parent) { const prevs = [...docsById.values()].filter(x => sameFamily(doc, x)); if (prevs.length) revHints.push({ id: doc.id, prev: prevs.sort((a, b) => b.id - a.id)[0].id }); }   // ¿otra revisión de un documento ya indexado?
+    let msg = kind === 'correo' ? 'Correo indexado' : (kind === 'documento' || kind === 'plano') ? `Indexado (${FORMAT_NAME[ext] || ext}, ${pages.length} ${pages.length === 1 ? 'parte' : 'partes'})` : `Indexado (${pages.length} pág.)`;
     if (low) msg += ` — ${low} pág. con OCR de baja confianza`;
     if (kind === 'correo' || mailAtts.length) {
       doc.attachments = []; let nOk = 0, nSkip = 0, nInl = 0;
@@ -183,42 +165,75 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent, roo
 
 async function removeDoc(id) {
   const nums = await DB.deleteDoc(id); docsById.delete(id);
-  for (const n of nums) mini.discard(pid(id, n));
+  for (const n of nums) { try { mini.discard(pid(id, n)); } catch { /* ya no estaba en el índice (papelera) */ } }
 }
 // ---- editar / eliminar / reindexar ----
 const children = id => [...docsById.values()].filter(c => c.parentId === id);
 const descendants = id => children(id).flatMap(c => [c.id, ...descendants(c.id)]);
 async function afterChange() {
   await refresh(); await runSearch(); await refreshReport();
-  const dc = $('#detail').dataset.doc; if (dc && docsById.has(+dc) && !$('#detailcard').hidden) await showDoc(+dc, +$('#detail').dataset.page || 1); else if (dc) { $('#detailcard').hidden = true; $('#detail').dataset.doc = ''; }
+  const dc = $('#detail').dataset.doc; if (dc && docsById.has(+dc) && !$('#detailcard').hidden) await showDoc(+dc, +$('#detail').dataset.page || 1, true); else if (dc) { $('#detailcard').hidden = true; $('#detail').dataset.doc = ''; }
+}
+const TRASH_DAYS = 30;
+async function purgeNow(id) {   // eliminación definitiva; los archivos de carpeta dejan una «lápida» para que el reescaneo no los vuelva a indexar mientras no cambien
+  const d = docsById.get(id); if (!d) return;
+  for (const k of descendants(id)) await removeDoc(k);
+  if (d.source === 'carpeta') {
+    for (const p of await DB.purgeContent(id)) { try { mini.discard(pid(id, p)); } catch { /* ya fuera del índice */ } }
+    if (Store.dir) await Store.removeDocFiles(id);
+    Object.assign(d, { status: 'excluido', pages: 0, attachments: [], error: 'Excluido del índice por el usuario' });
+    for (const k of ['title', 'tags', 'note', 'check', 'superseded', 'trashedAt', 'prevStatus', 'trashedWith']) delete d[k];
+    await DB.put('docs', d);
+  } else await removeDoc(id);
+  selected.delete(id);
+}
+async function trashDocs(ids) {   // papelera: el contenido se conserva TRASH_DAYS días y se puede recuperar
+  const now = new Date().toISOString();
+  for (const id of ids) {
+    const d = docsById.get(id); if (!d) continue;
+    if (d.status !== 'ok') { await purgeNow(id); continue; }   // duplicados y errores no tienen contenido que recuperar
+    const kids = descendants(id).map(k => docsById.get(k)).filter(Boolean);
+    for (const t of [d, ...kids]) {
+      if (t.status === 'papelera') continue;
+      if (t.status === 'ok') for (const p of await DB.byIndex('pages', 'docId', t.id)) { try { mini.discard(pid(t.id, p.pageNo)); } catch { /* ya fuera */ } }
+      t.prevStatus = t.status; t.status = 'papelera'; t.trashedAt = now; t.trashedWith = t === d ? null : id; await DB.put('docs', t); selected.delete(t.id);
+    }
+  }
+}
+async function untrash(id) {
+  const d = docsById.get(id); if (!d || d.status !== 'papelera') return;
+  for (const t of [d, ...[...docsById.values()].filter(x => x.trashedWith === id)]) {
+    t.status = t.prevStatus || 'ok'; delete t.prevStatus; delete t.trashedAt; delete t.trashedWith; await DB.put('docs', t);
+    if (t.status === 'ok') mini.addAll((await DB.byIndex('pages', 'docId', t.id)).map(p => ({ id: pid(t.id, p.pageNo), docId: t.id, pageNo: p.pageNo, text: p.text })));
+  }
+  await Extras.log('Recuperado de la papelera', d.name); await afterChange(); addMsg('ok', `<b>${esc(d.title || d.name)}</b> recuperado de la papelera.`);
+}
+async function autoPurge() {
+  const lim = Date.now() - TRASH_DAYS * 864e5, old = [...docsById.values()].filter(d => d.status === 'papelera' && !d.trashedWith && Date.parse(d.trashedAt) < lim);
+  for (const d of old) await purgeNow(d.id);
+  if (old.length) await Extras.log('Papelera vaciada automáticamente', `${old.length} documento(s)`, `con más de ${TRASH_DAYS} días`);
+}
+function renderTrash() {
+  const t = [...docsById.values()].filter(d => d.status === 'papelera' && !d.trashedWith && inProj(d)).sort((a, b) => b.trashedAt.localeCompare(a.trashedAt));
+  $('#trash').innerHTML = t.length ? `<table><tr><th>Documento</th><th>Tipo</th><th>Eliminado</th><th>Se borra definitivamente</th><th></th></tr>${t.map(d => {
+    const left = Math.max(0, Math.ceil((Date.parse(d.trashedAt) + TRASH_DAYS * 864e5 - Date.now()) / 864e5)), n = [...docsById.values()].filter(x => x.trashedWith === d.id).length;
+    return `<tr><td>${esc(d.title || d.path?.join('/') || d.name)}${n ? ` <span class="m">+${n} adjunto(s)</span>` : ''}</td><td>${d.kind}</td><td>${fdate(d.trashedAt)}</td><td>en ${left} día(s)</td><td><a href="#" data-act="untrash" data-id="${d.id}">recuperar</a> · <a href="#" data-act="purge" data-id="${d.id}">eliminar ya</a></td></tr>`; }).join('')}</table>` : '<div class="empty">La papelera está vacía.</div>';
+  $('#trash-empty').disabled = !t.length; $('#trash-n').textContent = t.length ? `(${t.length})` : '';
 }
 async function excludeDoc(id) {
   const d = docsById.get(id); if (!d) return;
-  const kids = descendants(id), n = kids.length;
-  if (!confirm(`¿Eliminar «${d.title || d.name}» del índice?${n ? `\n\nTambién se eliminarán sus ${n} adjunto(s) indexado(s).` : ''}\n\nNo se borra ningún archivo del disco. Dejará de aparecer en búsquedas e informes.${d.source === 'carpeta' ? '\nPodrás restaurarlo desde la tabla de documentos.' : '\nAl ser un archivo importado, se elimina también la copia guardada en este navegador.'}`)) return;
-  for (const k of kids) await removeDoc(k);
-  if (d.source === 'carpeta') {   // lápida: el reescaneo no lo vuelve a indexar mientras el archivo no cambie
-    for (const p of await DB.purgeContent(id)) mini.discard(pid(id, p));
-    if (Store.dir) await Store.removeDocFiles(id);
-    Object.assign(d, { status: 'excluido', pages: 0, attachments: [], error: 'Excluido del índice por el usuario' }); delete d.title; delete d.tags; delete d.note;
-    await DB.put('docs', d);
-  } else await removeDoc(id);
-  selected.delete(id); kids.forEach(k => selected.delete(k));
-  await DB.addLog('info', d.name, 'Eliminado del índice por el usuario'); await Extras.log('Eliminado del índice', d.name, n ? `con ${n} adjunto(s)` : ''); await afterChange();
+  const n = descendants(id).length;
+  if (!confirm(`¿Mover «${d.title || d.name}» a la papelera?${n ? `\n\nTambién sus ${n} adjunto(s) indexado(s).` : ''}\n\nDeja de aparecer en búsquedas e informes. Podrás recuperarlo durante ${TRASH_DAYS} días desde «Papelera» (pestaña Documentos). No se borra ningún archivo del disco.`)) return;
+  await trashDocs([id]);
+  await DB.addLog('info', d.name, 'Movido a la papelera por el usuario'); await Extras.log('Movido a la papelera', d.name, n ? `con ${n} adjunto(s)` : ''); await afterChange();
 }
 async function bulkDelete() {
   const ids = [...selected].filter(id => docsById.has(id)); if (!ids.length) return;
-  if (!confirm(`¿Eliminar ${ids.length} documento(s) del índice (y sus adjuntos)?\nNo se borra ningún archivo del disco.`)) return;
-  for (const id of ids) {
-    const d = docsById.get(id); if (!d) continue;
-    for (const k of descendants(id)) await removeDoc(k);
-    if (d.source === 'carpeta') { for (const p of await DB.purgeContent(id)) mini.discard(pid(id, p)); if (Store.dir) await Store.removeDocFiles(id); Object.assign(d, { status: 'excluido', pages: 0, attachments: [], error: 'Excluido del índice por el usuario' }); delete d.title; delete d.tags; delete d.note; await DB.put('docs', d); }
-    else await removeDoc(id);
-    selected.delete(id);
-  }
-  await DB.addLog('info', 'varios', `${ids.length} documento(s) eliminados del índice por el usuario`); await Extras.log('Eliminados varios', `${ids.length} documentos`); await afterChange();
+  if (!confirm(`¿Mover ${ids.length} documento(s) a la papelera (con sus adjuntos)?\nPodrás recuperarlos durante ${TRASH_DAYS} días. No se borra ningún archivo del disco.`)) return;
+  await trashDocs(ids);
+  await DB.addLog('info', 'varios', `${ids.length} documento(s) movidos a la papelera por el usuario`); await Extras.log('Movidos a la papelera', `${ids.length} documentos`); await afterChange();
 }
-async function restoreDoc(id) {
+async function restoreDoc(id) {   // lápidas antiguas (versiones anteriores): se vuelve a indexar desde la carpeta
   const d = docsById.get(id); if (!d || d.status !== 'excluido') return;
   await removeDoc(id); await Extras.log('Restaurado', d.name); await refresh(); await scan();
 }
@@ -275,17 +290,39 @@ async function restorePageText(id, pageNo) {
   mini.add({ id: pid(id, pageNo), docId: id, pageNo, text: p.text }); await afterChange();
 }
 
-async function importFiles(files, via) {
+// Barra de progreso común (importación y reescaneo)
+const prog = { start(total) { $('#prog').hidden = false; $('#progbar').max = Math.max(1, total); $('#progbar').value = 0; $('#progtxt').textContent = `0 / ${total}`; this.total = total; },
+  step(i, name) { $('#progbar').value = i; $('#progtxt').textContent = `${i} / ${this.total} · ${name}`.slice(0, 140); }, end() { $('#prog').hidden = true; } };
+async function importFiles(files, via) {   // files: File o { file, rel: ['sub','carpeta','archivo.pdf'] }
   if (busy) return addMsg('error', 'Hay un proceso en marcha; espera a que termine.');
-  busy = true; cancel = false; $('#cancel').hidden = false;
+  files = files.map(f => f instanceof File ? { file: f, rel: null } : f).filter(x => x.file);
+  if (!files.length) return;
+  busy = true; cancel = false; $('#cancel').hidden = false; prog.start(files.length); let i = 0, n = { ok: 0, dup: 0, err: 0 };
   try {
-    for (const f of files) {
+    for (const { file: f, rel } of files) {
       if (cancel) break;
-      const buf = await f.arrayBuffer();
-      const r = await ingest({ file: f, buf, key: 'i:' + f.name + ':' + f.size + ':' + f.lastModified, source: 'importado', via, fileDate: new Date(f.lastModified).toISOString() });
-      addMsg(r.status, `<b>${esc(f.name)}</b> — ${esc(r.msg)}`); await Extras.log('Importado (' + via + ')', f.name, r.status);
+      prog.step(i++, rel ? rel.join('/') : f.name);
+      const buf = await f.arrayBuffer(), shown = rel ? rel.join('/') : f.name;
+      const r = await ingest({ file: f, buf, key: 'i:' + shown + ':' + f.size + ':' + f.lastModified, path: rel, source: 'importado', via, fileDate: new Date(f.lastModified).toISOString() });
+      if (r.status === 'ok') n.ok++; else if (r.status === 'duplicado') n.dup++; else n.err++;
+      if (files.length <= 12 || r.status !== 'ok') addMsg(r.status, `<b>${esc(shown)}</b> — ${esc(r.msg)}`);
+      await Extras.log('Importado (' + via + ')', shown, r.status);
     }
-  } finally { busy = false; $('#cancel').hidden = true; setStatus(''); await refresh(); await runSearch(); }
+    if (files.length > 12) addMsg(cancel ? 'duplicado' : 'ok', `${cancel ? 'Interrumpido. ' : ''}Importación terminada: ${n.ok} indexados · ${n.dup} duplicados · ${n.err} con error (de ${files.length}).`);
+  } finally { busy = false; $('#cancel').hidden = true; prog.end(); setStatus(''); await refresh(); await runSearch(); flushRevHints(); }
+}
+// Carpeta soltada con el ratón: se recorre entera (subcarpetas incluidas) y se importan los formatos admitidos
+const readAll = r => new Promise((res, rej) => { const out = []; const go = () => r.readEntries(es => es.length ? (out.push(...es), go()) : res(out), rej); go(); });
+async function walkEntry(en, path, out) {
+  if (en.name.startsWith('.') || en.name === '$RECYCLE.BIN' || /^(Thumbs\.db|desktop\.ini)$/i.test(en.name)) return;
+  if (en.isFile) { if (ALL_EXT.includes(extOf(en.name))) out.push({ file: await new Promise((res, rej) => en.file(res, rej)), rel: [...path, en.name] }); }
+  else if (en.isDirectory) for (const c of await readAll(en.createReader())) await walkEntry(c, [...path, en.name], out);
+}
+async function importDropped(entries) {
+  setStatus('Leyendo la carpeta…', 'info'); const out = [];
+  try { for (const en of entries) await walkEntry(en, [], out); } finally { setStatus(''); }
+  if (!out.length) return addMsg('duplicado', 'La carpeta no contiene archivos de formatos admitidos.');
+  return importFiles(out, 'arrastrar carpeta');
 }
 
 // ---- carpeta ----
@@ -344,7 +381,7 @@ async function scan(quiet = false) {   // quiet: pasada automática, sin mensaje
     for (const r of ok) {
       if (!quiet) setStatus(`Buscando archivos en «${r.name}»…`, 'info');
       const found = []; for await (const e of walk(r.handle)) found.push(e);
-      let i = 0;
+      let i = 0, shown = false;
       for (const e of found) {
         if (cancel) break; i++; await tick();
         const key = `c:${r.id}:${e.path.join('/')}`;
@@ -353,6 +390,7 @@ async function scan(quiet = false) {   // quiet: pasada automática, sin mensaje
         const prev = (await DB.byIndex('docs', 'key', key))[0];
         if (prev && prev.size === file.size && prev.fileDate === fileDate && prev.status !== 'error') { n.skip++; continue; }
         if (prev) { await removeDoc(prev.id); n.mod++; await DB.addLog('info', file.name, 'Archivo modificado en la carpeta: se reindexa'); }
+        if (!shown) { prog.start(found.length); shown = true; } prog.step(i, e.path.join('/'));
         setStatus(`«${r.name}» (${i}/${found.length}) ${e.path.join('/')}`, 'info');
         const buf = await file.arrayBuffer();
         const res = await ingest({ file, buf, key, path: e.path, source: 'carpeta', via: 'carpeta', fileDate, rootId: r.id });
@@ -364,7 +402,7 @@ async function scan(quiet = false) {   // quiet: pasada automática, sin mensaje
     changed = n.ok + n.mod + n.dup + n.err > 0;
     if (!quiet || changed) addMsg(cancel ? 'duplicado' : 'ok', `${quiet ? 'Reescaneo automático. ' : ''}${cancel ? 'Interrumpido. ' : 'Carpetas procesadas. '}Nuevos: ${n.ok} · ya indexados: ${n.skip} · modificados: ${n.mod} · duplicados: ${n.dup} · errores: ${n.err}`);
   } catch (e) { addMsg('error', 'Error al leer la carpeta: ' + esc(e.message)); }
-  finally { busy = false; $('#cancel').hidden = true; setStatus(''); if (!quiet || changed) { await refresh(); await runSearch(); } }
+  finally { busy = false; $('#cancel').hidden = true; prog.end(); setStatus(''); if (!quiet || changed) { await refresh(); await runSearch(); } flushRevHints(); }
 }
 
 // ---- abrir originales ----
@@ -385,7 +423,7 @@ async function openOriginal(id, page) {
   const w = window.open('', '_blank');
   try {
     const d = docsById.get(id); let f = await getFileOfDoc(d);
-    if (d.kind === 'correo' || d.kind === 'documento') {   // el navegador no los muestra: se descarga el original para abrirlo con su programa
+    if (d.kind === 'correo' || d.kind === 'documento' || d.kind === 'plano') {   // el navegador no los muestra: se descarga el original para abrirlo con su programa
       w?.close(); const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = d.name; a.click(); return;
     }
     if (d.kind === 'pdf') { w?.close(); return openViewer({ blob: new Blob([f], { type: 'application/pdf' }), name: d.title || d.name, pageNo: page || 1, terms: lastTerms }); }
@@ -415,26 +453,38 @@ function snippet(text, terms) {
   out += esc(text.slice(pos, end));
   return (start > 0 ? '… ' : '') + out.replace(/\n/g, ' ') + (end < text.length ? ' …' : '');
 }
-const readSpec = () => ({ q: $('#q').value.trim(), kind: $('#kind').value, desde: $('#desde').value, hasta: $('#hasta').value, asunto: $('#asunto').value.trim(), remitente: $('#remitente').value.trim(), etiqueta: $('#etiqueta').value.trim() });
-const writeSpec = sp => { $('#q').value = sp.q || ''; $('#kind').value = sp.kind || ''; $('#desde').value = sp.desde || ''; $('#hasta').value = sp.hasta || ''; $('#asunto').value = sp.asunto || ''; $('#remitente').value = sp.remitente || ''; $('#etiqueta').value = sp.etiqueta || ''; };
-async function runSearch(spec, render = true) {   // render=false: solo devuelve los ids de documento (búsquedas guardadas)
-  const sp = spec || readSpec(), q = sp.q, kind = sp.kind || '', desde = sp.desde || '', hasta = sp.hasta || '';
-  const asu = normTerm(sp.asunto || ''), rem = normTerm(sp.remitente || ''), tag = normTerm(sp.etiqueta || '');
-  const dd = d => (d.emailDate || d.fileDate).slice(0, 10);
-  const okDoc = d => d && d.status === 'ok' && inProj(d) && (!kind || d.kind === kind) && (!desde || dd(d) >= desde) && (!hasta || dd(d) <= hasta)
+const readSpec = () => ({ q: $('#q').value.trim(), kind: $('#kind').value, desde: $('#desde').value, hasta: $('#hasta').value, asunto: $('#asunto').value.trim(), remitente: $('#remitente').value.trim(), etiqueta: $('#etiqueta').value.trim(), fz: $('#fz').checked, sust: $('#sust').checked });
+const writeSpec = sp => { $('#q').value = sp.q || ''; $('#kind').value = sp.kind || ''; $('#desde').value = sp.desde || ''; $('#hasta').value = sp.hasta || ''; $('#asunto').value = sp.asunto || ''; $('#remitente').value = sp.remitente || ''; $('#etiqueta').value = sp.etiqueta || ''; $('#fz').checked = !!sp.fz; $('#sust').checked = !!sp.sust; };
+const docDay = d => (d.emailDate || d.fileDate).slice(0, 10);
+const docFilter = sp => {
+  const kind = sp.kind || '', desde = sp.desde || '', hasta = sp.hasta || '', asu = normTerm(sp.asunto || ''), rem = normTerm(sp.remitente || ''), tag = normTerm(sp.etiqueta || '');
+  return d => d && d.status === 'ok' && inProj(d) && (!sp.sust || !d.superseded) && (!kind || d.kind === kind) && (!desde || docDay(d) >= desde) && (!hasta || docDay(d) <= hasta)
     && (!asu || normTerm(d.subject || '').includes(asu)) && (!rem || normTerm(d.sender || '').includes(rem)) && (!tag || normTerm((d.tags || '') + ' ' + (d.title || '')).includes(tag));
-  const CAP = render ? 100 : 500;
-  let rows = [], terms = [];
-  if (q) {
-    const { words, phrases } = parseQuery(q);
+};
+const FUZZY = t => t.length > 4 ? 0.2 : false;   // erratas de OCR: hasta ~20 % de letras distintas en palabras de más de 4 letras
+async function runSearch(spec, render = true) {   // render=false: solo devuelve los ids de documento (búsquedas guardadas)
+  const sp = spec || readSpec(), okDoc = docFilter(sp), CAP = render ? 100 : 500;
+  let rows = [], terms = [], hdr = '';
+  const vq = sp.q ? parseValueQuery(sp.q) : null, q = vq ? vq.rest : sp.q;   // «caudal > 5000 m3/h»: valor con unidad normalizada
+  if (q || vq) {
+    const { words, phrases } = parseQuery(q || '');
     terms = words.flatMap(w => synVariants(w)).flatMap(w => w.split(/[\s\p{P}]+/u));
-    const hits = mini.search({ combineWith: 'AND', queries: words.map(w => ({ combineWith: 'OR', queries: synVariants(w) })) }).filter(h => okDoc(docsById.get(h.docId)));
-    for (const h of hits) {
-      if (rows.length >= CAP) break;
-      const p = await DB.get('pages', [h.docId, h.pageNo]);
-      if (phrases.length && !phrases.every(ph => normLen(p.text).replace(/\s+/g, ' ').includes(normLen(ph).replace(/\s+/g, ' ')))) continue;
-      rows.push({ d: docsById.get(h.docId), p, score: h.score, snip: render ? snippet(p.text, terms) : '' });
+    let cand;   // páginas candidatas: [docId, pageNo, score, matchedTerms]
+    if (words.length) {
+      const hits = mini.search({ combineWith: 'AND', queries: words.map(w => ({ combineWith: 'OR', queries: synVariants(w) })) }, sp.fz ? { fuzzy: FUZZY } : {}).filter(h => okDoc(docsById.get(h.docId)));
+      cand = hits.map(h => [h.docId, h.pageNo, h.score, h.terms]);
+    } else {   // solo valor: se recorren las páginas de los documentos que pasan los filtros
+      cand = []; for (const d of [...docsById.values()].filter(okDoc).sort((a, b) => b.id - a.id)) for (const pg of (await DB.byIndex('pages', 'docId', d.id)).sort((x, y) => x.pageNo - y.pageNo)) cand.push([d.id, pg.pageNo, 0, []]);
     }
+    for (const [docId, pageNo, score, mt] of cand) {
+      if (rows.length >= CAP) break;
+      const p = await DB.get('pages', [docId, pageNo]); if (!p) continue;
+      if (phrases.length && !phrases.every(ph => normLen(p.text).replace(/\s+/g, ' ').includes(normLen(ph).replace(/\s+/g, ' ')))) continue;
+      let vm = null; if (vq) { vm = matchValues(p.text, vq.cond); if (!vm.length) continue; }
+      const tt = [...terms, ...(sp.fz ? (mt || []) : []), ...(vm || []).map(v => v.raw)];
+      rows.push({ d: docsById.get(docId), p, score, snip: render ? snippet(p.text, tt) + (vm ? ` <span class="m">⟶ ${vm.slice(0, 4).map(v => esc(v.raw) + (equiv(v) ? ' (' + esc(equiv(v)) + ')' : '')).join(' · ')}</span>` : '') : '' });
+    }
+    if (render && vq) hdr = `Valor buscado: ${vq.cond.label} (${vq.cond.dim}; unidades equivalentes incluidas) · `;
   } else {
     for (const d of [...docsById.values()].filter(okDoc).sort((a, b) => b.id - a.id).slice(0, render ? 30 : CAP)) {
       const p = await DB.get('pages', [d.id, 1]); rows.push({ d, p, score: 0, snip: render ? esc((p?.text || '').slice(0, 160)) : '' });
@@ -442,38 +492,84 @@ async function runSearch(spec, render = true) {   // render=false: solo devuelve
   }
   if (!render) return [...new Set(rows.map(r => r.d.id))];
   lastTerms = terms;
-  const sort = $('#sort').value, when = r => r.d.emailDate || r.d.fileDate || '';
+  return showRows(rows, hdr);
+}
+// Páginas parecidas a una dada: sus palabras más características (sin las muy comunes) buscadas como «cualquiera de ellas»
+const STOP = new Set('de la que el en y a los se del las un por con no una su para es al lo como mas pero sus le ya o este si porque esta entre cuando muy sin sobre tambien me hasta hay donde quien desde todo nos durante todos uno les ni contra otros ese eso ante ellos e esto antes algunos unos yo otro otras otra tanto esa estos mucho quienes nada muchos cual poco ella estar estas algunas algo mi mis te ti tu tus ellas os esos esas sera seran segun tipo deberan debera debe deben cada pagina the and of to in is for on with that this are be as by or at from'.split(' '));
+function topTerms(text, k = 14) {
+  const f = new Map(); for (const w of tokenize(text)) { const t = normTerm(w); if (t.length < 4 || STOP.has(t) || /^\d+$/.test(t)) continue; f.set(t, (f.get(t) || 0) + 1); }
+  return [...f].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length).slice(0, k).map(x => x[0]);
+}
+async function similarTo(docId, pageNo) {
+  const p = await DB.get('pages', [docId, pageNo]); if (!p) return;
+  const terms = topTerms(p.text); if (terms.length < 3) return addMsg('duplicado', 'Esta página tiene muy poco texto para buscar otras parecidas.');
+  const okDoc = docFilter({}), hits = mini.search({ combineWith: 'OR', queries: terms }, { prefix: false, fuzzy: false }).filter(h => h.docId !== docId && okDoc(docsById.get(h.docId))).slice(0, 40), rows = [];
+  for (const h of hits) { const q = await DB.get('pages', [h.docId, h.pageNo]); if (q) rows.push({ d: docsById.get(h.docId), p: q, score: h.score, snip: snippet(q.text, terms) }); }
+  lastTerms = terms; goTab('buscar');
+  const d = docsById.get(docId); await showRows(rows, `Parecidas a «${d.title || d.name}» (${p.label || 'pág. ' + p.pageNo}) por sus palabras más características · `, true);
+}
+async function showRows(rows, hdr = '', keepSort = false) {
+  const sort = keepSort ? 'rel' : $('#sort').value, when = r => r.d.emailDate || r.d.fileDate || '';
   if (sort === 'fecha-desc') rows.sort((a, b) => when(b).localeCompare(when(a))); else if (sort === 'fecha-asc') rows.sort((a, b) => when(a).localeCompare(when(b)));
   const total = rows.length, extra = new Map();
   if ($('#grp').checked) { const seen = new Map(); rows = rows.filter(r => { if (seen.has(r.d.id)) { extra.set(r.d.id, (extra.get(r.d.id) || 0) + 1); return false; } seen.set(r.d.id, 1); return true; }); }
   lastResultIds = [...new Set(rows.map(r => r.d.id))];
   const kc = {}; rows.forEach(r => kc[r.d.kind] = (kc[r.d.kind] || 0) + 1);
-  $('#rescount').textContent = rows.length ? `${total} coincidencia(s) en ${new Set(rows.map(r => r.d.id)).size} documento(s) · ` + Object.entries(kc).map(([k, n]) => `${n} ${k}`).join(' · ') : '';
+  $('#rescount').textContent = rows.length ? hdr + `${total} coincidencia(s) en ${new Set(rows.map(r => r.d.id)).size} documento(s) · ` + Object.entries(kc).map(([k, n]) => `${n} ${k}`).join(' · ') : '';
   $('#results').innerHTML = rows.length ? rows.map(({ d, p, snip }) => {
     const where = d.path ? [roots.get(d.rootId)?.name, ...d.path].filter(Boolean).join(' / ') : d.name, low = p.conf != null && p.conf < LOW_CONF, mail = d.kind === 'correo';
     const par = d.parentId ? docsById.get(d.parentId) : null;
     return `<div class="res"><div class="t"><a href="#" ${mail ? 'data-detail' : 'data-open'}="${d.id}" data-page="${p.pageNo}">${esc(d.title || (mail ? (d.subject || d.name) : d.name))}</a> <span class="m">· ${mail ? 'correo' : (p.label || 'pág. ' + p.pageNo)}${extra.get(d.id) ? ` · +${extra.get(d.id)} coincidencia(s) más` : ''}</span> <span class="tag">${esc(pj(d))}</span></div>
       ${(mail || par) ? `<div class="m">${mail ? '' : 'Adjunto del correo «' + esc(par?.subject || '') + '» · '}De: ${esc(d.sender || '')}${mail ? ' · Para: ' + esc(d.to || '') : ''} · ${fdate(d.emailDate)}</div>` : ''}
       <div class="s">${snip}</div>
-      <div class="m"><span class="tag">${d.kind}</span><span class="tag">${p.method === 'ocr' ? 'OCR ' + Math.round(p.conf) + '%' : p.method === 'correo' ? 'cuerpo del correo' : p.method === 'documento' ? 'texto del documento' : 'texto nativo'}</span>
+      <div class="m"><span class="tag">${d.kind}</span><span class="tag">${p.method === 'ocr' ? 'OCR ' + Math.round(p.conf) + '%' : p.method === 'correo' ? 'cuerpo del correo' : p.method === 'plano' ? 'texto del plano' : p.method === 'documento' ? 'texto del documento' : 'texto nativo'}</span>
       ${low ? '<span class="tag warn">⚠ OCR de baja confianza: verificar contra el original</span>' : ''}
-      ${esc(where)} · ${mail ? '<a href="#" data-open="' + d.id + '" data-page="1">abrir original (' + esc(d.name.split('.').pop()) + ')</a> · ' : 'archivo de ' + fdate(d.fileDate) + ' · '}<a href="#" data-detail="${d.id}" data-page="${p.pageNo}">ver / editar</a> · <a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>${p.edited ? ' <span class="tag warn">texto corregido</span>' : ''}${d.tags ? ' ' + d.tags.split(',').map(t => '<span class="tag">' + esc(t.trim()) + '</span>').join('') : ''}
+      ${esc(where)} · ${mail ? '<a href="#" data-open="' + d.id + '" data-page="1">abrir original (' + esc(d.name.split('.').pop()) + ')</a> · ' : 'archivo de ' + fdate(d.fileDate) + ' · '}<a href="#" data-detail="${d.id}" data-page="${p.pageNo}">ver / editar</a> · <a href="#" data-similar="${d.id}" data-page="${p.pageNo}" title="Otras páginas con palabras características parecidas">más como este</a> · <a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>${p.edited ? ' <span class="tag warn">texto corregido</span>' : ''}${d.tags ? ' ' + d.tags.split(',').map(t => '<span class="tag">' + esc(t.trim()) + '</span>').join('') : ''}
       ${d.kind === 'imagen' ? ` · <a href="#" data-proc="${d.id}" data-page="${p.pageNo}">versión procesada</a>` : ''}</div></div>`;
   }).join('') : '<div class="empty">Sin resultados.</div>';
   return lastResultIds;
 }
 
-async function showDoc(id, page) {
+
+// ---- vista previa de correo con sus adjuntos y su hilo ----
+const mailBody = t => { const i = t.indexOf('\n\n'); return i >= 0 ? t.slice(i + 2) : t; };
+const subjKey = s => normTerm((s || '(sin asunto)').replace(/^\s*((re|rv|fw|fwd|enc|r)\s*:\s*)+/i, '')).trim();
+const ICON = { pdf: '📕', doc: '📘', docx: '📘', xls: '📗', xlsx: '📗', ppt: '📙', pptx: '📙', dwg: '📐', dxf: '📐', dgn: '📐', zip: '🗜', png: '🖼', jpg: '🖼', jpeg: '🖼', tif: '🖼', tiff: '🖼', eml: '✉', msg: '✉' };
+function mailHtml(d) {
+  const thread = [...docsById.values()].filter(x => x.kind === 'correo' && x.status === 'ok' && inProj(x) && subjKey(x.subject) === subjKey(d.subject)).sort((a, b) => (a.emailDate || '').localeCompare(b.emailDate || '') || a.id - b.id);
+  const i = thread.findIndex(x => x.id === d.id), att = x => x.attachments || [];
+  const chip = (a, from) => `<span class="chip">${ICON[extOf(a.name)] || '📄'} ${a.docId ? `<a href="#" data-detail="${a.docId}" data-page="1">${esc(a.name)}</a>` : esc(a.name)} <span class="m">${Math.max(1, Math.round(a.size / 1024))} KB${a.note && a.note !== 'indexado' ? ' · ' + esc(a.note) : ''}${from ? ' · ' + esc(from) : ''}</span></span>`;
+  const tAtt = thread.flatMap(x => att(x).filter(a => a.docId).map(a => chip(a, x.id === d.id ? '' : fdate(x.emailDate).slice(0, 10))));
+  return `<div class="mailprev"><div class="mh"><b>${esc(d.subject || '(sin asunto)')}</b><table class="mt"><tr><td>De</td><td>${esc(d.sender || '')}</td></tr><tr><td>Para</td><td>${esc(d.to || '')}</td></tr><tr><td>Fecha</td><td>${fdate(d.emailDate)}</td></tr></table></div>
+    <div class="m" style="margin:6px 0">📎 Adjuntos (${att(d).length}): ${att(d).length ? att(d).map(a => chip(a)).join(' ') : 'ninguno'} · <a href="#" data-open="${d.id}" data-page="1">abrir correo original</a></div>
+    ${thread.length > 1 ? `<div class="m">🧵 Hilo de ${thread.length} correos: ${i > 0 ? `<a href="#" data-detail="${thread[i - 1].id}" data-page="1">◀ anterior</a> · ` : ''}${thread.map((x, k) => k === i ? `<b>${k + 1}</b>` : `<a href="#" data-detail="${x.id}" data-page="1" title="${esc((x.sender || '') + ' · ' + fdate(x.emailDate))}">${k + 1}</a>`).join(' · ')}${i < thread.length - 1 ? ` · <a href="#" data-detail="${thread[i + 1].id}" data-page="1">siguiente ▶</a>` : ''}</div>
+      <div class="m" style="margin-top:4px">Adjuntos de todo el hilo: ${tAtt.length ? tAtt.join(' ') : 'ninguno'}</div>` : ''}</div>`;
+}
+
+const chkHtml = d => `<div id="chkbox"><details style="margin-top:8px" ${d.check || d.superseded ? 'open' : ''}><summary><b>☑ Lista de comprobación</b> <span class="m">${esc(chkLabel(d)) || 'sin marcar'}</span></summary>
+  <div style="display:flex;flex-direction:column;gap:3px;margin:6px 0">${CHK.map(([k, l]) => `<label><input type="checkbox" data-chk="${k}" data-doc="${d.id}" ${d.check?.[k] ? 'checked' : ''}> ${l}${d.check?.[k] ? ` <span class="m">— ${esc(d.check[k].by)} · ${fdate(d.check[k].at)}</span>` : ''}</label>`).join('')}</div>
+  ${d.superseded ? `<div class="m"><span class="tag warn">sustituido</span> por ${docsById.get(d.superseded.by) ? `<a href="#" data-detail="${d.superseded.by}" data-page="1">${esc(docsById.get(d.superseded.by).name)}</a>` : 'otra revisión'} (${esc(d.superseded.user)} · ${fdate(d.superseded.at)}) · <a href="#" data-unsup="${d.id}">quitar marca</a></div>` : ''}</details></div>`;
+document.addEventListener('change', async e => {
+  const c = e.target.closest('[data-chk]'); if (!c) return;
+  const d = docsById.get(+c.dataset.doc); if (!d) return; d.check = { ...(d.check || {}) };
+  if (c.checked) d.check[c.dataset.chk] = { by: Extras.user(), at: new Date().toISOString() }; else delete d.check[c.dataset.chk];
+  if (!Object.keys(d.check).length) delete d.check;
+  await DB.put('docs', d); await Extras.log('Lista de comprobación', d.name, `${CHK.find(x => x[0] === c.dataset.chk)[1]}: ${c.checked ? 'marcado' : 'desmarcado'}`);
+  const box = $('#chkbox'); if (box) box.outerHTML = chkHtml(d); await refresh();
+});
+
+async function showDoc(id, page, stay = false) {
   const d = docsById.get(id), pages = (await DB.byIndex('pages', 'docId', id)).sort((a, b) => a.pageNo - b.pageNo);
   const pg = pages.find(p => p.pageNo === page) || pages[0]; if (!pg) return;
   $('#detailcard').hidden = false; $('#detail').dataset.doc = id; $('#detail').dataset.page = pg.pageNo;
   $('#detail').innerHTML = `<div><b>${esc(d.title || d.name)}</b>${d.title ? ` <span class="m">(${esc(d.name)})</span>` : ''}${d.tags ? ' ' + d.tags.split(',').map(t => `<span class="tag">${esc(t.trim())}</span>`).join('') : ''} <span class="m">→ nombre asignado ${esc(d.storedName)} · SHA-256 ${esc(d.sha256.slice(0, 16))}…</span></div>
-    ${d.kind === 'correo' ? `<div class="m"><b>Adjuntos:</b> ${(d.attachments || []).length ? d.attachments.map(a => (a.docId ? `<a href="#" data-detail="${a.docId}" data-page="1">${esc(a.name)}</a>` : esc(a.name)) + ' <span class="tag">' + esc(a.note) + '</span>').join(' · ') : 'ninguno'} · <a href="#" data-open="${d.id}" data-page="1">abrir original</a></div>` : ''}
+    ${d.kind === 'correo' ? mailHtml(d) : ''}
     ${d.parentId && docsById.get(d.parentId) ? `<div class="m">Adjunto del correo <a href="#" data-detail="${d.parentId}" data-page="1">«${esc(docsById.get(d.parentId).subject)}»</a> · <a href="#" data-open="${d.id}" data-page="1">abrir adjunto</a></div>` : ''}
-    <div class="m">${d.kind === 'correo' ? 'Correo' : (pg.label ? pg.label[0].toUpperCase() + pg.label.slice(1) : 'Página ' + pg.pageNo) + ' · parte ' + pg.pageNo + ' de ' + d.pages} · ${pg.method === 'correo' ? 'texto extraído del correo' : pg.method === 'documento' ? 'texto extraído del documento' : pg.method === 'ocr' ? 'OCR (confianza media ' + Math.round(pg.conf) + '%)' : 'texto nativo del PDF'}</div>
+    <div class="m">${d.kind === 'correo' ? 'Correo' : (pg.label ? pg.label[0].toUpperCase() + pg.label.slice(1) : 'Página ' + pg.pageNo) + ' · parte ' + pg.pageNo + ' de ' + d.pages} · ${pg.method === 'correo' ? 'texto extraído del correo' : pg.method === 'plano' ? 'texto extraído del plano' : pg.method === 'documento' ? 'texto extraído del documento' : pg.method === 'ocr' ? 'OCR (confianza media ' + Math.round(pg.conf) + '%)' : 'texto nativo del PDF'}</div>
+    ${chkHtml(d)}
     ${d.note ? `<div class="msg ok" style="background:#fffbea;border-color:#ecd98a;color:#1c2430">📝 ${esc(d.note)}</div>` : ''}
     ${pg.edited ? '<div class="m"><span class="tag warn">texto corregido manualmente</span> <a href="#" data-restxt="1">volver al texto extraído originalmente</a></div>' : ''}
-    <pre id="pagetext">${esc(pg.text) || '(sin texto)'}</pre>
+    <pre id="pagetext">${esc(d.kind === 'correo' ? mailBody(pg.text) : pg.text) || '(sin texto)'}</pre>
     <div class="row"><button class="sec" id="markbtn" data-doc="${id}" data-page="${pg.pageNo}">★ Marcar selección como importante</button><button class="sec" id="reqbtn" data-doc="${id}" data-page="${pg.pageNo}">☑ Añadir selección como requisito</button><span class="m">Selecciona un fragmento del texto y pulsa el botón: irá a la sección «Puntos marcados» del informe.</span></div>
     <div id="marks"></div>
     <details style="margin-top:8px"><summary><b>✎ Editar este documento</b></summary>
@@ -490,7 +586,7 @@ async function showDoc(id, page) {
     <div class="m"><b>Transformaciones aplicadas:</b> ${pg.steps?.length ? pg.steps.map(s => esc(s.step) + ' (' + esc(s.detail) + ')').join(' · ') : 'ninguna (texto nativo)'}</div>
     <div style="margin-top:8px">${pages.map(p => `<a href="#" data-detail="${id}" data-page="${p.pageNo}">p.${p.pageNo}</a>`).join(' · ')}</div>`;
   await renderMarks(id);
-  goTab('buscar'); $('#detailcard').scrollIntoView({ behavior: 'smooth' });
+  if (!stay) { goTab('buscar'); $('#detailcard').scrollIntoView({ behavior: 'smooth' }); }
 }
 
 async function renderMarks(docId) {
@@ -512,17 +608,18 @@ function renderDash() {
   const stale = !Store.dir ? 'No hay carpeta de datos: la copia solo existe en este navegador.' : (Store.dirty.size ? 'Cambios pendientes de guardar en disco…' : (!Store.lastSave ? 'Copia en disco aún no guardada en esta sesión.' : (Date.now() - Store.lastSave > 864e5 ? 'La última copia en disco tiene más de 24 h.' : '')));
   const edited = ok.reduce((n, d) => n + (d.edited ? 1 : 0), 0);
   $('#dash').innerHTML = `<h2>Panel · ${esc(curProject || 'todos los proyectos')}</h2><div class="row" style="gap:18px">
-    <div><b style="font-size:22px">${ok.length}</b><div class="m">documentos<br>${by('pdf')} PDF · ${by('imagen')} img · ${by('correo')} correos · ${by('documento')} otros</div></div>
+    <div><b style="font-size:22px">${ok.length}</b><div class="m">documentos<br>${by('pdf')} PDF · ${by('imagen')} img · ${by('correo')} correos · ${by('plano')} planos · ${by('documento')} otros</div></div>
     <div><b style="font-size:22px">${ok.reduce((n, d) => n + (d.pages || 0), 0)}</b><div class="m">páginas/partes indexadas</div></div>
-    <div><b style="font-size:22px">${ds.filter(d => d.status === 'error').length}</b><div class="m">con error · ${ds.filter(d => d.status === 'excluido').length} excluidos</div></div>
+    <div><b style="font-size:22px">${ds.filter(d => d.status === 'error').length}</b><div class="m">con error · ${ds.filter(d => d.status === 'papelera' && !d.trashedWith).length} en papelera</div></div>
+    <div><b style="font-size:22px">${ok.filter(d => d.check?.rev).length}/${ok.length}</b><div class="m">revisados · ${ok.filter(d => d.check?.pen).length} pendientes de respuesta</div></div>
     <div><b style="font-size:22px">${st.length}</b><div class="m">requisitos · ${st.filter(r => r.status === 'pendiente').length} pendientes · ${st.filter(r => r.status === 'conflicto').length} en conflicto${panels?.overdueCount?.() ? ` · <b style="color:#b42318">${panels.overdueCount()} vencidos</b>` : ''}</div></div></div>
     ${stale ? `<div class="msg duplicado">⚠ ${esc(stale)}</div>` : ''}`;
 }
 async function refresh() {
-  renderDash(); renderAudit(); panels.renderReqs(); panels.renderThreads(); panels.renderOcr(); panels.updateBadges();
-  const docs = [...docsById.values()].filter(d => inProj(d) && !d.hidden).sort((a, b) => b.id - a.id);
-  $('#docs').innerHTML = docs.length ? `<table><tr><th></th><th>#</th><th>Archivo</th><th>Tipo</th><th>Origen</th><th>Págs</th><th>Indexado</th><th>Estado</th><th>Acciones</th></tr>` +
-    docs.map(d => `<tr><td>${d.status === 'ok' ? `<input type="checkbox" data-sel="${d.id}" ${selected.has(d.id) ? 'checked' : ''}>` : ''}</td><td>${d.id}</td><td>${esc(d.path ? d.path.join('/') : d.name)}${d.title ? `<div class="m">${esc(d.title)}</div>` : ''}</td><td>${d.kind}</td><td>${esc(d.via)}</td><td>${d.pages}</td><td>${fdate(d.ingestedAt)}</td>
+  renderDash(); renderAudit(); renderTrash(); renderRevs(); panels.renderReqs(); panels.renderThreads(); panels.renderOcr(); panels.updateBadges();
+  const docs = [...docsById.values()].filter(d => inProj(d) && !d.hidden && d.status !== 'papelera').sort((a, b) => b.id - a.id);
+  $('#docs').innerHTML = docs.length ? `<table><tr><th></th><th>#</th><th>Archivo</th><th>Tipo</th><th>Origen</th><th>Págs</th><th>Indexado</th><th title="Lista de comprobación: revisado · contrastado · valores verificados (⏳ = pendiente de respuesta)">Control</th><th>Estado</th><th>Acciones</th></tr>` +
+    docs.map(d => `<tr><td>${d.status === 'ok' ? `<input type="checkbox" data-sel="${d.id}" ${selected.has(d.id) ? 'checked' : ''}>` : ''}</td><td>${d.id}</td><td>${esc(d.path ? d.path.join('/') : d.name)}${d.title ? `<div class="m">${esc(d.title)}</div>` : ''}</td><td>${d.kind}</td><td>${esc(d.via)}</td><td>${d.pages}</td><td>${fdate(d.ingestedAt)}</td><td>${d.status === 'ok' ? esc(chkLabel(d)) : ''}${d.superseded ? ' <span class="tag warn">sustituido</span>' : ''}</td>
     <td>${d.status === 'ok' ? `<a href="#" data-open="${d.id}" data-page="1">original</a>` : `<span class="tag warn">${d.status}</span>`}</td>
     <td>${d.status === 'ok' ? `<a href="#" data-detail="${d.id}" data-page="1">ver/editar</a>${d.parentId ? '' : ` · <a href="#" data-act="reindex" data-id="${d.id}">reindexar</a>`} · <a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>` : d.status === 'excluido' ? `<a href="#" data-act="restore" data-id="${d.id}">restaurar</a>` : `<a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>`}</td></tr>`).join('') + '</table>' : '<div class="empty">Aún no hay documentos.</div>';
   $('#rep-sel').textContent = `Informe de los seleccionados (${selected.size})`; $('#rep-sel').disabled = !selected.size;
@@ -577,9 +674,13 @@ async function importIndex(file) {
 
 // ---- eventos ----
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-detail],[data-proc],[data-rmroot],[data-markdel],[data-marknote],[data-act],[data-restxt]'); if (!t) return;
+  const t = e.target.closest('[data-open],[data-detail],[data-proc],[data-rmroot],[data-markdel],[data-marknote],[data-act],[data-restxt],[data-similar]'); if (!t) return;
   e.preventDefault();
-  if (t.dataset.act) { const id = +t.dataset.id; return t.dataset.act === 'exclude' ? excludeDoc(id) : t.dataset.act === 'reindex' ? reindexDoc(id) : restoreDoc(id); }
+  if (t.dataset.similar) return similarTo(+t.dataset.similar, +t.dataset.page);
+  if (t.dataset.act) { const id = +t.dataset.id; const A = t.dataset.act;
+    if (A === 'untrash') return untrash(id);
+    if (A === 'purge') { const d = docsById.get(id); if (!d || !confirm(`¿Eliminar definitivamente «${d.title || d.name}»? No se podrá recuperar.`)) return; return purgeNow(id).then(async () => { await Extras.log('Eliminado definitivamente', d.name); await afterChange(); }); }
+    return A === 'exclude' ? excludeDoc(id) : A === 'reindex' ? reindexDoc(id) : restoreDoc(id); }
   if (t.dataset.restxt) return restorePageText(+$('#detail').dataset.doc, +$('#detail').dataset.page);
   if (t.dataset.markdel) { const m = (+t.dataset.markdel); return DB.get('marks', m).then(async x => { await DB.del('marks', m); await renderMarks(x.docId); }); }
   if (t.dataset.marknote) { const m = +t.dataset.marknote; return DB.get('marks', m).then(async x => { const n = prompt('Nota para este punto (opcional):', x.note || ''); if (n === null) return; x.note = n.trim(); await DB.put('marks', x); await renderMarks(x.docId); }); }
@@ -594,10 +695,15 @@ $('#file').onchange = e => { importFiles([...e.target.files], 'seleccionar'); e.
 ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
 drop.addEventListener('drop', e => {
+  const items = [...(e.dataTransfer.items || [])].filter(i => i.kind === 'file'), ents = items.map(i => i.webkitGetAsEntry?.()).filter(Boolean);   // hay que leerlas dentro del evento
+  if (ents.some(x => x.isDirectory)) return void importDropped(ents).catch(err => addMsg('error', esc(err.message)));
   const files = [...e.dataTransfer.files];
   if (files.length) importFiles(files, 'arrastrar');
-  else addMsg('error', `El origen arrastrado no entregó ningún archivo (tipos recibidos: ${esc([...(e.dataTransfer.types || [])].join(', ') || 'ninguno')}). Pasa con correos arrastrados directamente desde Outlook al navegador. Arrástralos primero a una carpeta del Explorador de Windows (se crean archivos .msg) y desde ahí a esta zona, o añade esa carpeta con «Añadir carpeta…». Imágenes de Teams: prueba Ctrl+V o descárgalas.`);
+  else addMsg('error', `El origen arrastrado no entregó ningún archivo (tipos recibidos: ${esc([...(e.dataTransfer.types || [])].join(', ') || 'ninguno')}). Pasa con correos arrastrados directamente desde Outlook al navegador. Arrástralos primero a una carpeta del Explorador de Windows y luego arrastra aquí los archivos o la carpeta.`);
 });
+$('#dirfile').onchange = e => { importFiles([...e.target.files].filter(f => ALL_EXT.includes(extOf(f.name))).map(f => ({ file: f, rel: (f.webkitRelativePath || f.name).split('/') })), 'carpeta elegida'); e.target.value = ''; };
+$('#pickdir').onclick = () => $('#dirfile').click();
+$('#prog-cancel').onclick = () => { cancel = true; };
 document.addEventListener('paste', e => {
   const files = [...(e.clipboardData?.files || [])]; if (!files.length) return; e.preventDefault();
   importFiles(files.map((f, i) => (f.name && f.name !== 'image.png') ? f : new File([f], `pegado_${Date.now()}_${i}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type })), 'pegar');
@@ -706,8 +812,8 @@ $('#audit-csv').onclick = () => download(new Blob([Extras.auditCsv()], { type: '
 // ---- plantilla del informe (por proyecto) ----
 const cfgKey = () => curProject || 'General';
 const cfg = () => (Extras.d.cfg[cfgKey()] ??= { co: '', no: '', rev: 'A', au: '', logo: '' });
-function loadCfg() { const c = cfg(); $('#rc-co').value = c.co; $('#rc-no').value = c.no; $('#rc-rev').value = c.rev; $('#rc-au').value = c.au || Extras.user().replace('(sin nombre)', ''); $('#rc-logoprev').innerHTML = c.logo ? `<img src="${c.logo}" style="height:32px;vertical-align:middle">` : ''; }
-for (const [id, k] of [['rc-co', 'co'], ['rc-no', 'no'], ['rc-rev', 'rev'], ['rc-au', 'au']]) $('#' + id).onchange = async e => { cfg()[k] = e.target.value.trim(); await Extras.save(); refreshReport(); };
+function loadCfg() { const c = cfg(); $('#rc-co').value = c.co; $('#rc-no').value = c.no; $('#rc-rev').value = c.rev; $('#rc-au').value = c.au || Extras.user().replace('(sin nombre)', ''); $('#rc-wm').value = c.wm || ''; $('#rc-cl').value = c.cl || ''; $('#rc-logoprev').innerHTML = c.logo ? `<img src="${c.logo}" style="height:32px;vertical-align:middle">` : ''; }
+for (const [id, k] of [['rc-co', 'co'], ['rc-no', 'no'], ['rc-rev', 'rev'], ['rc-au', 'au'], ['rc-wm', 'wm'], ['rc-cl', 'cl']]) $('#' + id).onchange = async e => { cfg()[k] = e.target.value.trim(); await Extras.save(); refreshReport(); };
 $('#rc-revup').onclick = async () => { const c = cfg(), r = c.rev || 'A'; c.rev = /^\d+$/.test(r) ? String(+r + 1) : r.length === 1 && /[A-Y]/i.test(r) ? String.fromCharCode(r.charCodeAt(0) + 1) : r + '+'; await Extras.save(); loadCfg(); await Extras.log('Nueva revisión de informe', cfgKey(), c.rev); refreshReport(); };
 $('#rc-logoclear').onclick = async () => { cfg().logo = ''; await Extras.save(); loadCfg(); refreshReport(); };
 $('#rc-logo').onchange = async e => {
@@ -759,7 +865,7 @@ try { const a = JSON.parse(localStorage.getItem('fb-auto') || 'null'); if (a) { 
 setAuto();
 $('#cancel').onclick = () => { cancel = true; };
 $('#sf').onsubmit = e => { e.preventDefault(); runSearch(); };
-$('#sort').onchange = $('#grp').onchange = () => runSearch();
+$('#sort').onchange = $('#grp').onchange = $('#fz').onchange = $('#sust').onchange = () => runSearch();
 $('#bulk-del').onclick = bulkDelete; $('#export').onclick = exportIndex; $('#export-enc').onclick = () => exportEnc().catch(e => addMsg('error', esc(e.message))); $('#export2').onclick = exportIndex;
 $('#import').onchange = async e => { try { await importIndex(e.target.files[0]); } catch (err) { addMsg('error', esc(err.message)); } e.target.value = ''; };
 $('#wipe').onclick = async () => {
@@ -816,17 +922,97 @@ $('#projnew').onclick = async () => {
 $('#user').value = localStorage.getItem('fb-user') || ''; $('#user').onchange = e => { localStorage.setItem('fb-user', e.target.value.trim()); };
 const setTheme = t => { document.documentElement.dataset.theme = t; localStorage.setItem('fb-theme', t); $('#theme').textContent = t === 'dark' ? '☀' : '🌙'; };
 setTheme(localStorage.getItem('fb-theme') || 'light'); $('#theme').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+const TABS = ['inicio', 'buscar', 'requisitos', 'informes', 'documentos', 'datos'];
+let curRes = -1;
+function moveRes(delta) {
+  const rs = [...document.querySelectorAll('#results .res')]; if (!rs.length) return false;
+  curRes = Math.min(rs.length - 1, Math.max(0, curRes + delta)); rs.forEach((r, i) => r.classList.toggle('cur', i === curRes)); rs[curRes].scrollIntoView({ block: 'nearest' }); return true;
+}
+const curRow = () => document.querySelectorAll('#results .res')[curRes];
 document.addEventListener('keydown', e => {
-  const typing = /INPUT|TEXTAREA|SELECT/.test(e.target.tagName);
-  if (e.key === '/' && !typing) { e.preventDefault(); $('#q').focus(); $('#q').select(); }
-  else if (e.key === 'Escape') { if (typing) e.target.blur(); else if (!$('#detailcard').hidden) $('#detailcard').hidden = true; }
+  const typing = /INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || e.target.isContentEditable, v = $('#viewer'), inViewer = v && !v.hidden && getComputedStyle(v).display !== 'none';
+  if (e.key === '/' && !typing) { e.preventDefault(); goTab('buscar'); $('#q').focus(); $('#q').select(); }
+  else if (e.key === 'Escape') { if ($('#help').open) $('#help').close(); else if (typing) e.target.blur(); else if (!$('#detailcard').hidden) $('#detailcard').hidden = true; }
   else if (e.altKey && e.key.toLowerCase() === 'r') { e.preventDefault(); makeReport('res'); }
   else if (e.altKey && e.key.toLowerCase() === 'g') { e.preventDefault(); exportIndex(); }
+  else if (e.altKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); goTab(TABS[+e.key - 1]); }
+  else if (e.key === 'ArrowDown' && e.target.id === 'q' && $('#results .res')) { e.preventDefault(); e.target.blur(); curRes = -1; moveRes(1); }
+  else if (!typing && !inViewer && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const onSearch = document.querySelector('[data-tab=buscar].on');
+    if (e.key === '?') { e.preventDefault(); $('#help').showModal(); }
+    else if (onSearch && (e.key === 'ArrowDown' || e.key === 'j')) { if (moveRes(1)) e.preventDefault(); }
+    else if (onSearch && (e.key === 'ArrowUp' || e.key === 'k')) { if (moveRes(-1)) e.preventDefault(); }
+    else if (onSearch && curRow() && (e.key === 'Enter' || e.key === 'o' || e.key === 's')) {
+      const sel = e.key === 'o' ? '[data-open]' : e.key === 's' ? '[data-similar]' : '[data-detail]'; const a = curRow().querySelector(sel) || curRow().querySelector('[data-open]'); if (a) { e.preventDefault(); a.click(); }
+    }
+    else if (onSearch && !$('#detailcard').hidden && (e.key === '[' || e.key === ']')) {   // parte anterior / siguiente del documento abierto
+      const links = [...document.querySelectorAll('#detail > div:last-child [data-detail]')], cur = +$('#detail').dataset.page, i = links.findIndex(x => +x.dataset.page === cur), n = links[i + (e.key === ']' ? 1 : -1)]; if (n) { e.preventDefault(); n.click(); }
+    }
+  }
 });
+
+
+// ---- revisiones de un mismo documento (por el nombre del archivo) ----
+const fkCache = new WeakMap(), fk = d => { if (!fkCache.has(d)) fkCache.set(d, famKey(d.name)); return fkCache.get(d); };
+const sameFamily = (a, b) => a.id !== b.id && b.status === 'ok' && !b.parentId && (b.project || '') === (a.project || '') && a.kind === b.kind && extOf(a.name) === extOf(b.name) && fk(a) && fk(a) === fk(b) && a.sha256 !== b.sha256;
+const revHints = [];
+function flushRevHints() {
+  for (const h of revHints.splice(0)) {
+    const n = docsById.get(h.id), o = docsById.get(h.prev); if (!n || !o) continue;
+    addMsg('duplicado', `<b>${esc(n.name)}</b> parece otra <b>revisión</b> de «${esc(o.name)}»${revOf(n.name) || revOf(o.name) ? ` (${esc(revOf(o.name) || '—')} → ${esc(revOf(n.name) || '—')})` : ''}. <a href="#" data-cmpids="${o.id},${n.id}">Comparar</a> · <a href="#" data-sup="${o.id}" data-by="${n.id}">marcar la anterior como sustituida</a>`);
+  }
+}
+function renderRevs() {
+  const gs = revGroups([...docsById.values()].filter(d => inProj(d) && !d.hidden && !d.parentId));
+  $('#revs').innerHTML = gs.length ? gs.map(g => `<div style="margin:8px 0"><b>${esc(g.at(-1).d.name.replace(/\.[^.]+$/, ''))}</b> <span class="m">${g.length} versiones detectadas por el nombre del archivo</span>
+    <table><tr><th>Rev.</th><th>Archivo</th><th>Fecha</th><th>Estado</th><th></th></tr>${g.map(({ d, rev }, i) => `<tr><td>${esc(rev || '—')}</td><td><a href="#" data-detail="${d.id}" data-page="1">${esc(d.path ? d.path.join('/') : d.name)}</a></td><td>${fdate(d.emailDate || d.fileDate)}</td>
+      <td>${d.superseded ? '<span class="tag warn">sustituido</span>' : i === g.length - 1 ? '<span class="tag">última</span>' : ''}</td>
+      <td>${i ? `<a href="#" data-cmpids="${g[i - 1].d.id},${d.id}">comparar con la anterior</a>` : ''}${i < g.length - 1 && !d.superseded ? ` · <a href="#" data-sup="${d.id}" data-by="${g.at(-1).d.id}">marcar sustituido</a>` : ''}${d.superseded ? ` · <a href="#" data-unsup="${d.id}">quitar marca</a>` : ''}</td></tr>`).join('')}</table></div>`).join('')
+    : '<div class="empty">No hay documentos con varias revisiones (mismo nombre con Rev. A/B, v1/v2, R1/R2… y contenido distinto).</div>';
+}
+document.addEventListener('click', async e => {
+  const c = e.target.closest('[data-cmpids]'), su = e.target.closest('[data-sup]'), un = e.target.closest('[data-unsup]'); if (!c && !su && !un) return; e.preventDefault();
+  if (c) { const [a, b] = c.dataset.cmpids.split(',').map(Number); selected.clear(); selected.add(a); selected.add(b); cmpSwap = false; await refresh(); return compareSelected(); }
+  const d = docsById.get(+(su || un).dataset[su ? 'sup' : 'unsup']); if (!d) return;
+  if (su) { d.superseded = { by: +su.dataset.by, user: Extras.user(), at: new Date().toISOString() }; await Extras.log('Marcado como sustituido', d.name, `por #${su.dataset.by}`); } else { delete d.superseded; await Extras.log('Marca de sustituido quitada', d.name); }
+  await DB.put('docs', d); await afterChange();
+});
+
+// ---- matriz de trazabilidad ----
+let mxRows = [];
+async function renderMatrix() {
+  const reqs = panels.reqsInProj().filter(r => docsById.get(r.docId)); if (!reqs.length) { $('#mx').innerHTML = '<div class="empty">No hay requisitos en este proyecto.</div>'; mxRows = []; return; }
+  setStatus('Generando matriz de trazabilidad…', 'info');
+  const okDoc = d => d.status === 'ok' && inProj(d);
+  const related = async r => { const t = topTerms(r.text, 8); return t.length < 3 ? [] : mini.search({ combineWith: 'OR', queries: t }, { prefix: false, fuzzy: false }).filter(h => okDoc(docsById.get(h.docId))).slice(0, 8).map(h => ({ docId: h.docId, pageNo: h.pageNo })); };
+  try { mxRows = await buildMatrix({ reqs, docsById, DB, okDoc, related }); } finally { setStatus(''); }
+  const link = (id, pg, lab) => { const d = docsById.get(id); return d ? `<a href="#" data-detail="${id}" data-page="${pg}">${esc(d.title || d.name)}</a> <span class="m">${esc(lab)}</span>` : ''; };
+  $('#mx').innerHTML = `<table><tr><th>#</th><th>Requisito (literal)</th><th>Origen</th><th>Estado</th><th>Aparece con el mismo texto en</th><th>Menciones relacionadas <span class="m">(aproximadas: revisar)</span></th><th>Control del origen</th></tr>${mxRows.map(({ r, origin, same, rel }) =>
+    `<tr><td>${r.id}</td><td>${esc(r.text.length > 220 ? r.text.slice(0, 217) + '…' : r.text)}</td><td>${link(r.docId, r.pageNo, 'pág. ' + r.pageNo)}</td><td>${esc(r.status)}${r.due ? `<div class="m">vence ${esc(r.due)}</div>` : ''}</td>
+    <td>${same.length ? same.map(x => link(x.docId, x.pageNo, x.label)).join('<br>') : '<span class="m">solo en el origen</span>'}</td><td>${rel.length ? rel.map(x => link(x.docId, x.pageNo, 'pág. ' + x.pageNo)).join('<br>') : '<span class="m">—</span>'}</td><td>${esc(origin ? chkLabel(origin) : '')}</td></tr>`).join('')}</table>
+    <div class="m" style="margin-top:6px">«Mismo texto» = el fragmento literal del requisito se encuentra tal cual en esa página. «Relacionadas» = páginas que comparten sus palabras más características; es solo una ayuda de búsqueda, no una conclusión.</div>`;
+  $('#mx-xlsx').disabled = false;
+}
+$('#mx-go').onclick = () => renderMatrix().catch(e => { setStatus(''); addMsg('error', esc(e.message)); });
+$('#mx-xlsx').onclick = () => {
+  if (!mxRows.length) return;
+  const nm = id => { const d = docsById.get(id); return d ? (d.title || d.subject || d.name) : '(eliminado)'; }, f = (id, pg, lab) => `${nm(id)} (${lab || 'pág. ' + pg})`;
+  const docs = [...docsById.values()].filter(d => d.status === 'ok' && inProj(d)), ck = (d, k) => d.check?.[k] ? `${d.check[k].by} · ${fdate(d.check[k].at)}` : '';
+  download(packXlsx([
+    { name: 'Matriz de trazabilidad', widths: [6, 70, 34, 8, 14, 22, 12, 60, 60, 12], rows: [['#', 'Requisito (literal)', 'Documento de origen', 'Pág.', 'Estado', 'Concepto', 'Vence', 'Aparece con el mismo texto en', 'Menciones relacionadas (aproximadas)', 'Control del origen'],
+      ...mxRows.map(({ r, origin, same, rel }) => [String(r.id), r.text, nm(r.docId), String(r.pageNo), r.status, r.group || '', r.due || '', same.map(x => f(x.docId, x.pageNo, x.label)).join('; '), rel.map(x => f(x.docId, x.pageNo)).join('; '), origin ? chkLabel(origin) : ''])] },
+    { name: 'Lista de comprobación', widths: [50, 28, 28, 28, 28, 14], rows: [['Documento', 'Revisado', 'Contrastado con otros documentos', 'Valores verificados contra el original', 'Pendiente de respuesta', 'Sustituido'],
+      ...docs.map(d => [d.title || d.path?.join('/') || d.name, ck(d, 'rev'), ck(d, 'con'), ck(d, 'val'), ck(d, 'pen'), d.superseded ? 'sí' : ''])] },
+  ]), `feedback-matriz-trazabilidad-${new Date().toISOString().slice(0, 10)}.xlsx`); Extras.log('Matriz de trazabilidad exportada', '.xlsx', `${mxRows.length} requisitos`);
+};
+$('#trash-empty').onclick = async () => {
+  const t = [...docsById.values()].filter(d => d.status === 'papelera' && !d.trashedWith && inProj(d)); if (!t.length || !confirm(`¿Eliminar definitivamente los ${t.length} documento(s) de la papelera? No se podrán recuperar.`)) return;
+  for (const d of t) await purgeNow(d.id); await Extras.log('Papelera vaciada', `${t.length} documento(s)`); await afterChange();
+};
 
 // ---- arranque ----
 (async () => {
-  await DB.open(); await loadIndex();
+  await DB.open(); await Lock.gate(); Lock.init(); await loadIndex();
   await Store.init(); DB.onChange = (...a) => Store.hook(...a); Store.checkMigration().catch(() => {});
   navigator.storage?.persist?.();
   if (!window.showDirectoryPicker) $('#nofs').hidden = false;
@@ -841,5 +1027,5 @@ document.addEventListener('keydown', e => {
     } catch { /* se mostrará el estado */ }
   }
   window.__feedback = { Store, setDataDir: h => { Store.dir = h; Store.status(); }, addRoot: h => addRoot(h, false), scan, importFiles, ready: true };   // gancho para pruebas automáticas
-  loadCfg(); await refresh(); await runSearch(); renderVersions();
+  await autoPurge().catch(() => {}); loadCfg(); await refresh(); await runSearch(); renderVersions();
 })();

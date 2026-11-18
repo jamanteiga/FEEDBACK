@@ -53,3 +53,11 @@ main{flex:1;min-height:0;overflow-y:auto;width:100%;max-width:none;margin:0;padd
 #reportframe{height:56vh!important}
 #toasts{position:fixed;right:14px;bottom:14px;display:flex;flex-direction:column;gap:6px;z-index:60;max-width:min(420px,90vw)}
 #toasts .msg{box-shadow:0 2px 10px rgba(0,0,0,.25);cursor:pointer;margin:0;color:#1c2430}
+
+.mailprev{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:8px 0;background:var(--card)}
+.mailprev .mh{border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:6px;font-size:15px}.mailprev .mt{width:auto;margin-top:4px}.mailprev .mt td{border:0;padding:1px 10px 1px 0;font-size:12.5px;color:var(--mut)}.mailprev .mt td:first-child{font-weight:600}
+.chip{display:inline-block;border:1px solid var(--line);border-radius:14px;padding:1px 9px;margin:2px 2px 2px 0;background:var(--bg)}
+progress{height:14px;accent-color:var(--acc)}.res.cur{outline:2px solid var(--acc);outline-offset:-2px;background:color-mix(in srgb,var(--acc) 7%,transparent)}
+#help{border:1px solid var(--line);border-radius:10px;padding:16px 20px;max-width:560px;background:var(--card);color:var(--ink)}#help table td{padding:3px 10px 3px 0}#help kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 6px;background:var(--bg);font-size:12px}
+
+#lock{position:fixed;inset:0;z-index:9999;background:var(--bg,#1c2430);display:flex;align-items:center;justify-content:center}#lock[hidden]{display:none}#lock form{background:var(--card,#fff);color:var(--ink);padding:24px 28px;border-radius:10px;width:min(360px,92vw);display:flex;flex-direction:column;gap:10px;box-shadow:0 8px 40px #0006}#lock input{padding:8px}

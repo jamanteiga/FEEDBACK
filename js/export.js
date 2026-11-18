@@ -8,7 +8,7 @@ export const reportName = ext => `informe-feedback-${stamp()}.${ext}`;
 // ---------------- DOCX ----------------
 export async function toDocx(m) {
   const D = globalThis.docx;
-  const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, ShadingType, BorderStyle, Footer, AlignmentType, PageNumber } = D;
+  const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, ShadingType, BorderStyle, Footer, Header, AlignmentType, PageNumber } = D;
   const runs = (t, o = {}) => clean(t).split('\n').map((l, i) => new TextRun({ text: l, break: i ? 1 : 0, size: o.size ?? 20, bold: o.bold, italics: o.italics, color: o.color }));
   const para = (t, o = {}) => new Paragraph({ children: runs(t, o), spacing: { after: o.after ?? 80 }, bullet: o.bullet ? { level: 0 } : undefined, heading: o.heading });
   const line = { style: BorderStyle.SINGLE, size: 4, color: 'B8C0CC' };
@@ -46,9 +46,24 @@ export async function toDocx(m) {
   }
   const doc = new Document({ creator: 'FEEDBACK', title: m.title, sections: [{
     properties: { page: { margin: { top: 1000, bottom: 1000, left: 1000, right: 1000 } } },
-    footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ children: ['Página ', PageNumber.CURRENT, ' de ', PageNumber.TOTAL_PAGES], size: 16, color: '777777' })] })] }) },
+    headers: { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: m.header?.cl ? [new TextRun({ text: clean(m.header.cl), bold: true, size: 18, color: 'B42318' })] : [] })] }) },
+    footers: { default: new Footer({ children: [...(m.header?.cl ? [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: clean(m.header.cl), bold: true, size: 18, color: 'B42318' })] })] : []), new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ children: ['Página ', PageNumber.CURRENT, ' de ', PageNumber.TOTAL_PAGES], size: 16, color: '777777' })] })] }) },
     children: c }] });
-  return Packer.toBlob(doc);
+  const blob = await Packer.toBlob(doc);
+  return m.header?.wm ? addDocxWatermark(blob, clean(m.header.wm)) : blob;
+}
+
+// Marca de agua de Word (texto VML en la cabecera, como la que inserta Word en Diseño > Marca de agua)
+async function addDocxWatermark(blob, text) {
+  const files = fflate.unzipSync(new Uint8Array(await blob.arrayBuffer())), name = Object.keys(files).find(n => /^word\/header\d*\.xml$/.test(n));
+  if (!name) return blob;
+  let x = fflate.strFromU8(files[name]); const ns = { 'xmlns:v': 'urn:schemas-microsoft-com:vml', 'xmlns:o': 'urn:schemas-microsoft-com:office:office', 'xmlns:w10': 'urn:schemas-microsoft-com:office:word' };
+  x = x.replace(/<w:hdr\b([^>]*)>/, (m, a) => `<w:hdr${a}${Object.entries(ns).filter(([k]) => !a.includes(k + '=')).map(([k, v]) => ` ${k}="${v}"`).join('')}>`);
+  const t = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'), w = Math.min(520, Math.max(260, t.length * 40)), h = Math.round(w / Math.max(4, t.length) * 1.6);
+  const pict = `<w:r><w:rPr><w:noProof/></w:rPr><w:pict><v:shapetype id="_x0000_t136" coordsize="21600,21600" o:spt="136" adj="10800" path="m@7,l@8,m@5,21600l@6,21600e"><v:formulas><v:f eqn="sum #0 0 10800"/><v:f eqn="prod #0 2 1"/><v:f eqn="sum 21600 0 @1"/><v:f eqn="sum 0 0 @2"/><v:f eqn="sum 21600 0 @3"/><v:f eqn="if @0 @3 0"/><v:f eqn="if @0 21600 @1"/><v:f eqn="if @0 0 @2"/><v:f eqn="if @0 @4 21600"/><v:f eqn="mid @5 @6"/><v:f eqn="mid @8 @5"/><v:f eqn="mid @7 @8"/><v:f eqn="mid @6 @7"/><v:f eqn="sum @6 0 @5"/></v:formulas><v:path textpathok="t" o:connecttype="custom" o:connectlocs="@9,0;@10,10800;@11,21600;@12,10800" o:connectangles="270,180,90,0"/><v:textpath on="t" fitshape="t"/><v:handles><v:h position="#0,bottomRight" xrange="6629,14971"/></v:handles><o:lock v:ext="edit" text="t" shapetype="t"/></v:shapetype><v:shape id="PowerPlusWaterMarkObject1" o:spid="_x0000_s2049" type="#_x0000_t136" style="position:absolute;margin-left:0;margin-top:0;width:${w}pt;height:${h}pt;rotation:315;z-index:-251658752;mso-position-horizontal:center;mso-position-horizontal-relative:margin;mso-position-vertical:center;mso-position-vertical-relative:margin" o:allowincell="f" fillcolor="silver" stroked="f"><v:fill opacity=".5"/><v:textpath style="font-family:&quot;Calibri&quot;;font-size:1pt" string="${t}"/><w10:wrap anchorx="margin" anchory="margin"/></v:shape></w:pict></w:r>`;
+  x = x.includes('</w:p>') ? x.replace('</w:p>', pict + '</w:p>') : x.replace(/<w:p\/>/, '<w:p>' + pict + '</w:p>');   // al final del primer párrafo de la cabecera
+  files[name] = fflate.strToU8(x);
+  return new Blob([fflate.zipSync(files)], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 }
 
 // ---------------- PDF ----------------
@@ -96,18 +111,23 @@ export function toPdf(m) {
     doc.addPage(); y = M; head('Cuadro comparativo de valores por categoria', 13); text(m.compareNote, 8.5, { italic: true, after: 6 });
     for (const g of m.comparison) { head(g.cat, 10.5); tbl(['Valor', 'Documento', 'Ubicacion', 'Fecha'], g.rows.map(v => [v.value, `${v.n}. ${v.doc}`, v.loc, v.date]), [20, 50, 18, 12]); }
   }
-  const n = doc.getNumberOfPages();
-  for (let i = 1; i <= n; i++) { doc.setPage(i); doc.setFontSize(8); doc.setTextColor(120, 120, 120); doc.text(`FEEDBACK · Pagina ${i} de ${n}`, W / 2, Hh - 24, { align: 'center' }); }
+  const n = doc.getNumberOfPages(), wm = latin(m.header?.wm || ''), cl = latin(m.header?.cl || '');
+  for (let i = 1; i <= n; i++) {
+    doc.setPage(i);
+    if (wm) { try { doc.saveGraphicsState(); doc.setGState(new doc.GState({ opacity: 0.13 })); doc.setFont('helvetica', 'bold'); doc.setFontSize(wm.length > 14 ? 52 : 80); doc.setTextColor(90, 90, 90); doc.text(wm, W / 2, Hh / 2, { align: 'center', angle: 35, baseline: 'middle' }); doc.restoreGraphicsState(); } catch { /* sin marca de agua */ } }
+    if (cl) { doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(180, 35, 24); doc.text(cl, W / 2, 20, { align: 'center' }); doc.text(cl, W / 2, Hh - 12, { align: 'center' }); }
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(120, 120, 120); doc.text(`FEEDBACK · Pagina ${i} de ${n}`, W / 2, Hh - 28, { align: 'center' });
+  }
   return doc.output('blob');
 }
 
 // ---------------- XLSX ----------------
 const xe = s => clean(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const colName = i => { let s = ''; for (i++; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + (i - 1) % 26) + s; return s; };
-function sheetXml(rows, widths) {
+function sheetXml(rows, widths, cl = '') {
   const body = rows.map((r, ri) => `<row r="${ri + 1}">${r.map((v, ci) => `<c r="${colName(ci)}${ri + 1}" t="inlineStr" s="${ri === 0 ? 1 : 0}"><is><t xml:space="preserve">${xe(v)}</t></is></c>`).join('')}</row>`).join('');
   const last = `${colName(Math.max(0, (rows[0] || ['']).length - 1))}${Math.max(1, rows.length)}`;
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols><sheetData>${body}</sheetData><autoFilter ref="A1:${last}"/></worksheet>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols><sheetData>${body}</sheetData><autoFilter ref="A1:${last}"/><pageMargins left="0.5" right="0.5" top="0.8" bottom="0.8" header="0.3" footer="0.3"/><pageSetup orientation="landscape" fitToHeight="0"/><headerFooter><oddHeader>${cl ? '&amp;C&amp;B&amp;K00B42318' + xe(cl).replace(/&amp;/g, '&amp;&amp;') : ''}</oddHeader><oddFooter>${cl ? '&amp;L&amp;B&amp;K00B42318' + xe(cl).replace(/&amp;/g, '&amp;&amp;') : ''}&amp;RPágina &amp;P de &amp;N</oddFooter></headerFooter></worksheet>`;
 }
 export function toXlsx(m) {
   const lab = (d, k) => (d.rows.find(r => r[0] === k) || [])[1] || '';
@@ -128,9 +148,9 @@ export function toXlsx(m) {
   if (m.comparison.length) sheets.push({ name: 'Comparativo', widths: [26, 16, 40, 16, 12], rows: [['Categoría', 'Valor', 'Documento', 'Ubicación', 'Fecha'], ...m.comparison.flatMap(g => g.rows.map(v => [g.cat, v.value, `${v.n}. ${v.doc}`, v.loc, v.date]))] });
   sheets.push({ name: 'Método', widths: [120], rows: [['Método y advertencias'], [headLine(m.header)], [m.method], [`Generado el ${m.when} · Alcance: ${m.scope} · ${m.count} documento(s)`], ...(m.comparison.length ? [[m.compareNote]] : [])] });
 
-  return packXlsx(sheets);
+  return packXlsx(sheets, m.header?.cl || '');
 }
-export function packXlsx(sheets) {
+export function packXlsx(sheets, cl = '') {
   const E = s => fflate.strToU8(s), files = {
     '[Content_Types].xml': E(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`),
     '_rels/.rels': E(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`),
@@ -138,6 +158,6 @@ export function packXlsx(sheets) {
     'xl/_rels/workbook.xml.rels': E(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`),
     'xl/styles.xml': E(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE8EEF8"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`),
   };
-  sheets.forEach((s, i) => { files[`xl/worksheets/sheet${i + 1}.xml`] = E(sheetXml(s.rows, s.widths)); });
+  sheets.forEach((s, i) => { files[`xl/worksheets/sheet${i + 1}.xml`] = E(sheetXml(s.rows, s.widths, cl)); });
   return new Blob([fflate.zipSync(files)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }

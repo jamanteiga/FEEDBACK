@@ -1,8 +1,8 @@
 // Service worker: permite instalar la app y usarla sin conexión tras la primera carga.
 // Código propio (html/js/css): red primero, con caché de respaldo (así las actualizaciones llegan solas).
 // Librerías (vendor/) e iconos: caché primero. Los documentos del usuario nunca pasan por aquí.
-const V = 'feedback-v0.13';
-const SHELL = ['./', 'index.html', 'style.css', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'js/app.js', 'js/db.js', 'js/proc.js', 'js/extract.js', 'js/store.js', 'js/report.js', 'js/export.js', 'js/extras.js', 'js/panels.js', 'js/viewer.js', 'js/compare.js'];
+const V = 'feedback-v0.14';
+const SHELL = ['./', 'index.html', 'style.css', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'js/app.js', 'js/db.js', 'js/proc.js', 'js/extract.js', 'js/store.js', 'js/report.js', 'js/export.js', 'js/extras.js', 'js/panels.js', 'js/viewer.js', 'js/compare.js', 'js/cad.js', 'js/legacy.js', 'js/mail.js', 'js/parse.js', 'js/parse.worker.js', 'js/units.js', 'js/trace.js', 'js/vault.js', 'js/lock.js'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(V).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== V).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', e => {

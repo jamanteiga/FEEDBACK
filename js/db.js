@@ -1,4 +1,24 @@
 // Almacén local (IndexedDB). Todo queda en este navegador y este equipo.
+// Con contraseña activada, cada registro se guarda cifrado (_enc); solo quedan en claro las claves de acceso (ids) y un índice ciego (HMAC) para detectar duplicados.
+import { Vault } from './vault.js';
+const te = new TextEncoder(), td = new TextDecoder();
+const PLAIN = { docs: ['id'], pages: ['docId', 'pageNo'], marks: ['id', 'docId'], log: ['id'] };
+async function pack(s, v, k, K = Vault) {
+  if (!K.enc || v == null) return v;
+  if (s === 'blobs' || s === 'pimg') return { _enc: await Vault.seal(new Uint8Array(await v.arrayBuffer()), K), _t: v.type || '' };
+  if (s === 'meta') return k === 'extras' ? { _enc: await Vault.seal(te.encode(JSON.stringify(v)), K) } : v;
+  const o = { _enc: await Vault.seal(te.encode(JSON.stringify(v)), K) };
+  for (const f of PLAIN[s] || []) if (v[f] !== undefined) o[f] = v[f];
+  if (s === 'docs') { if (v.sha256 != null) o.sha256 = await Vault.hash(v.sha256, K); if (v.key != null) o.key = await Vault.hash(v.key, K); }
+  return o;
+}
+async function unpack(s, r, K = Vault) {
+  if (r == null || r._enc === undefined) return r;   // en claro (sin contraseña, o registro aún sin migrar)
+  if (!K.enc) throw new Error('Datos cifrados: desbloquea la aplicación.');
+  const u = await Vault.open(r._enc, K);
+  if (s === 'blobs' || s === 'pimg') return new Blob([u], { type: r._t || '' });
+  const o = JSON.parse(td.decode(u)); if (s !== 'meta' && r.id !== undefined) o.id = r.id; return o;
+}
 const NAME = 'feedback-web';
 let db;
 
@@ -24,12 +44,28 @@ export const DB = {
     });
   },
   onChange: null,   // gancho para la copia en disco
-  get: (s, k) => req(store(s).get(k)),
-  async put(s, v, k) { const r = await req(store(s, 'readwrite').put(v, k)); DB.onChange?.('put', s, v, k, r); return r; },
+  async get(s, k) { return unpack(s, await req(store(s).get(k))); },
+  async put(s, v, k) { const w = await pack(s, v, k); const r = await req(store(s, 'readwrite').put(w, k)); DB.onChange?.('put', s, v, k, r); return r; },
   async del(s, k) { await req(store(s, 'readwrite').delete(k)); DB.onChange?.('del', s, null, k); },
-  all: s => req(store(s).getAll()),
+  async all(s) { return Promise.all((await req(store(s).getAll())).map(r => unpack(s, r))); },
   async clear(s) { await req(store(s, 'readwrite').clear()); DB.onChange?.('clear', s); },
-  byIndex: (s, idx, val) => req(store(s).index(idx).getAll(IDBKeyRange.only(val))),
+  async byIndex(s, idx, val) {
+    if (Vault.on && s === 'docs' && (idx === 'sha' || idx === 'key')) val = await Vault.hash(val);
+    return Promise.all((await req(store(s).index(idx).getAll(IDBKeyRange.only(val)))).map(r => unpack(s, r)));
+  },
+  // Cambia el cifrado de todos los registros: oldK/newK = claves (o null = en claro). No dispara la copia en disco.
+  async recrypt(oldK, newK, onProgress) {
+    for (const s of ['docs', 'pages', 'blobs', 'pimg', 'marks', 'log', 'meta']) {
+      const keys = s === 'meta' ? ['extras'] : await req(store(s).getAllKeys());
+      let n = 0;
+      for (const k of keys) {
+        const raw = await req(store(s).get(k)); if (raw === undefined) continue;
+        const plain = await unpack(s, raw, oldK || {}), w = await pack(s, plain, k, newK || {});
+        const inline = store(s).keyPath != null; await req(inline ? store(s, 'readwrite').put(w) : store(s, 'readwrite').put(w, k));
+        if (++n % 25 === 0) onProgress?.(s, n, keys.length);
+      }
+    }
+  },
 
   async addLog(level, filename, message) {
     await this.put('log', { at: new Date().toISOString(), level, filename, message });

@@ -3,6 +3,7 @@
 // Estructura (v2, mínima): feedback-datos.fbd (índice comprimido) · originales/<id> (solo archivos importados a mano) · versions/*.fbv
 // Las copias antiguas (manifest.json, docs/, blobs/, pimg/…) se leen igualmente y se migran solas al formato nuevo.
 import { DB } from './db.js';
+import { Vault } from './vault.js';
 
 const DELAY = 6000, DATA = 'feedback-datos.fbd';
 const hhmm = d => d.toTimeString().slice(0, 5);
@@ -10,11 +11,13 @@ const hhmm = d => d.toTimeString().slice(0, 5);
 async function sub(dir, parts, create) { let d = dir; for (const p of parts) d = await d.getDirectoryHandle(p, { create }); return d; }
 async function writeFile(dir, path, data) {
   const parts = path.split('/'), name = parts.pop(), d = await sub(dir, parts, true);
+  if (Vault.on) data = await Vault.sealFile(new Uint8Array(data instanceof Blob ? await data.arrayBuffer() : data));
   const w = await (await d.getFileHandle(name, { create: true })).createWritable(); await w.write(data); await w.close();
 }
 async function readFile(dir, path) {
   const parts = path.split('/'), name = parts.pop(), d = await sub(dir, parts, false);
-  return (await d.getFileHandle(name)).getFile();
+  const f = await (await d.getFileHandle(name)).getFile(), u = new Uint8Array(await f.arrayBuffer()), o = Vault.isSealed(u) ? await Vault.openFile(u) : u;   // descifra si hace falta
+  return { size: o.length, arrayBuffer: async () => o.buffer.slice(o.byteOffset, o.byteOffset + o.length), text: async () => new TextDecoder().decode(o) };
 }
 async function removeFile(dir, path) { try { const parts = path.split('/'), name = parts.pop(); await (await sub(dir, parts, false)).removeEntry(name); } catch { /* no existe */ } }
 

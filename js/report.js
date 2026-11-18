@@ -43,7 +43,7 @@ export function analyze(pages) {
 
 const CSS = `body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#111;margin:24px}h1{font-size:20pt;margin:0 0 4pt}h2{font-size:14pt;border-bottom:1.5pt solid #1f5fbf;padding-bottom:2pt;margin-top:22pt;color:#1f3f7a}
 h3{font-size:11.5pt;margin:12pt 0 3pt}table{border-collapse:collapse;width:100%;margin:4pt 0 8pt}td,th{border:.75pt solid #b8c0cc;padding:3pt 5pt;font-size:10pt;vertical-align:top;text-align:left}th{background:#e8eef8}
-.nota{background:#fff8e6;border:.75pt solid #e6c675;padding:6pt 8pt;font-size:10pt}.m{color:#555;font-size:9.5pt}.warn{color:#9a4a00}ul{margin:2pt 0 6pt 16pt;padding:0}li{margin:2pt 0}@media print{h2{page-break-after:avoid}}`;
+.nota{background:#fff8e6;border:.75pt solid #e6c675;padding:6pt 8pt;font-size:10pt}.m{color:#555;font-size:9.5pt}.warn{color:#9a4a00}ul{margin:2pt 0 6pt 16pt;padding:0}li{margin:2pt 0}@media print{h2{page-break-after:avoid}}@page{margin:18mm 14mm 20mm;@bottom-center{content:"Página " counter(page) " de " counter(pages);font:9px sans-serif;color:#777}}.wm{position:fixed;top:42%;left:0;right:0;text-align:center;font:bold 110px Arial,sans-serif;color:rgba(120,120,120,.16);transform:rotate(-35deg);pointer-events:none;z-index:0;letter-spacing:6px}.cls{position:fixed;left:0;right:0;text-align:center;font:bold 10px Arial,sans-serif;color:#b42318;letter-spacing:1px}.cls.t{top:2px}.cls.b{bottom:2px}`;
 
 const NAME_OF = d => d.title ? `${d.title} (${d.name})` : (d.kind === 'correo' && d.subject ? `${d.subject} (${d.name})` : d.name);
 const locOf = (pages, n) => (pages.find(q => q.pageNo === n) || {}).label || 'pág. ' + n;
@@ -101,7 +101,7 @@ export function renderHtml(m) {
   const rq = m.reqs?.length ? `<h2>Requisitos y su estado</h2><table><tr><th>#</th><th>Requisito (literal)</th><th>Origen</th><th>Estado</th><th>Concepto</th><th>Nota</th></tr>${m.reqs.map(q => `<tr><td>${q.id}</td><td>${esc(q.text)}</td><td>${esc(q.doc)} · ${esc(q.loc)}</td><td>${esc(q.status)}</td><td>${esc(q.group)}</td><td>${esc(q.note)}</td></tr>`).join('')}</table>` : '';
   const cmp = m.comparison.length ? `<h2>Cuadro comparativo de valores por categoría</h2><p class="nota"><b>${esc(m.compareNote.split(':')[0])}:</b>${esc(m.compareNote.split(':').slice(1).join(':'))}</p>` +
     m.comparison.map(c => `<h3>${esc(c.cat)}</h3><table><tr><th>Valor</th><th>Documento</th><th>Ubicación</th><th>Fecha</th></tr>${c.rows.map(v => `<tr><td>${esc(v.value)}</td><td>${v.n}. ${esc(v.doc)}</td><td>${esc(v.loc)}</td><td>${esc(v.date)}</td></tr>`).join('')}</table>`).join('') : '';
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(m.title)}</title><style>${CSS}</style></head><body>
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(m.title)}</title><style>${CSS}</style></head><body>${m.header?.wm ? `<div class="wm">${esc(m.header.wm)}</div>` : ''}${m.header?.cl ? `<div class="cls t">${esc(m.header.cl)}</div><div class="cls b">${esc(m.header.cl)}</div>` : ''}
     ${m.header?.logo ? `<img src="${m.header.logo}" style="max-height:60px;float:right">` : ''}<h1>${esc(m.title)}</h1><p class="m">${esc(headLine(m.header))}</p><p class="m">Generado el ${m.when} · Alcance: ${esc(m.scope)} · ${m.count} documento(s)</p>
     <p class="nota"><b>Método:</b> ${esc(m.method)}</p><h2>Índice</h2><ol>${toc}</ol>${sections}${rq}${cmp}</body></html>`;
 }
