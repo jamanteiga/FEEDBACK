@@ -179,7 +179,7 @@ export function initPanels(c) {
   document.addEventListener('click', async e => {
     const t = e.target.closest('[data-oc]'); if (!t) return; e.preventDefault(); const a = t.dataset.oc, cur = oc[ocI];
     if (a === 'prev') ocI = (ocI - 1 + oc.length) % oc.length; else if (a === 'next') ocI = (ocI + 1) % oc.length;
-    else if (a === 'view' && cur && docsById.get(cur.docId)?.kind === 'pdf') { c.openViewer({ blob: await c.getFile(cur.docId), name: docName(cur.docId), pageNo: cur.pageNo }); return; }
+    else if (a === 'view' && cur && docsById.get(cur.docId)?.kind === 'pdf') { c.openViewer({ blob: await c.getFile(cur.docId), name: docName(cur.docId), pageNo: cur.pageNo, docId: cur.docId }); return; }
     else if (a === 'save') { await c.setPageText(cur.docId, cur.pageNo, $('#oc-text').value); await Extras.log('OCR corregido', docName(cur.docId), `pág. ${cur.pageNo}`); return; }
     else if (a === 'ok') { const pg = await DB.get('pages', [cur.docId, cur.pageNo]); pg.reviewed = true; await DB.put('pages', pg); await Extras.log('OCR revisado sin cambios', docName(cur.docId), `pág. ${cur.pageNo}`); }
     await renderOcr();

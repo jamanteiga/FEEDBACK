@@ -1,10 +1,11 @@
 // Visor de PDF integrado: muestra la página exacta con los términos buscados resaltados (solo lectura; el original no se modifica).
 import { openPdfDoc, pdfjsLib } from './proc.js';
 import { decorate, leaveFs } from './vwin.js';
+import { cachedBoxes, matchBoxes, drawBoxes } from './locate.js';
 const norm = s => Array.from(s).map(c => { const d = c.normalize('NFD')[0].toLowerCase(); return d.length === 1 ? d : c.toLowerCase()[0]; }).join('');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-export async function openViewer({ blob, name, pageNo = 1, terms = [] }) {
+export async function openViewer({ blob, name, pageNo = 1, terms = [], docId = null }) {
   document.getElementById('viewer')?.remove();
   const wrap = document.createElement('div'); wrap.id = 'viewer';
   wrap.innerHTML = `<div class="vwin"><div class="vbar"><b class="vname">${esc(name)}</b><button class="sec" data-v="prev">◀</button><span class="vpg"></span><button class="sec" data-v="next">▶</button>
@@ -25,8 +26,8 @@ export async function openViewer({ blob, name, pageNo = 1, terms = [] }) {
       cv.width = Math.floor(vp.width * dpr); cv.height = Math.floor(vp.height * dpr); cv.style.width = vp.width + 'px'; cv.style.height = vp.height + 'px';
       hl.style.width = vp.width + 'px'; hl.style.height = vp.height + 'px'; hl.innerHTML = '';
       await page.render({ canvasContext: cv.getContext('2d'), viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null }).promise;
-      let hits = 0;
-      for (const it of (await page.getTextContent()).items) {
+      let hits = 0; const tc = (await page.getTextContent()).items, myN = n;
+      for (const it of tc) {
         if (!it.str || !it.width) continue;
         const s = norm(it.str), tx = pdfjsLib.Util.transform(vp.transform, it.transform), h = Math.hypot(tx[2], tx[3]), w = it.width * vp.scale, L = s.length;
         for (const t of ts) { let i = -1; while ((i = s.indexOf(t, i + 1)) >= 0) {
@@ -34,6 +35,14 @@ export async function openViewer({ blob, name, pageNo = 1, terms = [] }) {
           hl.appendChild(d); hits++; } }
       }
       wrap.querySelector('.vpg').textContent = `pág. ${n} de ${pdf.numPages}`; wrap.querySelector('.vhits').textContent = ts.length ? `${hits} coincidencia(s) resaltadas en esta página` : '';
+      if (ts.length && !hits && tc.filter(i => i.str?.trim()).length < 5) {   // página escaneada: se localiza el texto por OCR y se rodea con un rectángulo rojo
+        const hitsEl = wrap.querySelector('.vhits'); hitsEl.textContent = 'Localizando el texto en la imagen (OCR)…';
+        try {
+          const boxes = await cachedBoxes(docId, myN, async () => { const sc = Math.min(4.2, 4200 / Math.max(page.view[2] - page.view[0], page.view[3] - page.view[1])), v2 = page.getViewport({ scale: sc }), c = document.createElement('canvas'); c.width = Math.floor(v2.width); c.height = Math.floor(v2.height); await page.render({ canvasContext: c.getContext('2d'), viewport: v2 }).promise; return c; }, st => { hitsEl.textContent = 'Localizando el texto en la imagen (OCR)… ' + (st || ''); });
+          if (myN === n) { const r = matchBoxes(boxes, terms), f1 = drawBoxes(hl, r); hitsEl.textContent = r.length ? `${r.length} coincidencia(s) localizadas por OCR (rectángulo rojo; posición aproximada)` : 'Sin coincidencias localizables por OCR en esta página'; if (f1) body.scrollTop = Math.max(0, f1.offsetTop - 120); }
+        } catch (e) { hitsEl.textContent = 'No se pudo localizar el texto por OCR: ' + (e.message || e); }
+        busy = false; if (again) { again = false; render(); } return;
+      }
       const first = hl.firstElementChild; if (first) body.scrollTop = Math.max(0, first.offsetTop - 120); else body.scrollTop = 0;
     } catch (e) { wrap.querySelector('.vpg').textContent = 'Error: ' + e.message; }
     busy = false; if (again) { again = false; render(); }

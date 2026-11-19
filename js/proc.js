@@ -99,6 +99,12 @@ export function denseBinarize(src, opts = {}) {
 }
 const rot90 = (c, cw) => { const r = mkCanvas(c.height, c.width), x = r.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, r.width, r.height); x.translate(cw ? r.width : 0, cw ? 0 : r.height); x.rotate((cw ? 1 : -1) * Math.PI / 2); x.drawImage(c, 0, 0); return r; };
 const tsvWords = tsv => (tsv || '').split('\n').map(l => l.split('\t')).filter(a => a.length >= 12 && a[0] === '5' && (a[11] || '').trim()).map(a => ({ conf: +a[10], text: a[11].trim() }));
+// Añade a la lectura normal solo las palabras nuevas de la lectura densa (nunca sustituye una buena lectura por otra peor)
+export function mergeDense(base, dense) {
+  const seen = new Set(base.toLowerCase().split(/\s+/).filter(Boolean)), add = [];
+  for (const t of dense.split(/\s+/)) { const k = t.toLowerCase(); if (t.length >= 3 && /[A-Za-z0-9]/.test(t) && !seen.has(k) && !/^\[/.test(t)) { seen.add(k); add.push(t); } }
+  return add.length ? base.trim() + '\n\n[lecturas adicionales: sombreados y texto vertical]\n' + add.join(' ') : base;
+}
 export async function ocrDense(canvas, onStatus) {
   const w = await getWorker(onStatus);
   onStatus?.('OCR denso: preparando imagen…');
@@ -117,7 +123,7 @@ export async function ocrDense(canvas, onStatus) {
     take(tsvWords((await w.recognize(rot90(bin, cw), {}, { text: true, tsv: true })).data.tsv));
   }
   await w.setParameters({ tessedit_pageseg_mode: '3' });
-  const text = (h.data.text || '').trim() + (extra.length ? '\n\n[lecturas adicionales: sombreados y texto vertical]\n' + extra.join(' ') : '');
+  const text = tsvWords(h.data.tsv).filter(x => x.conf >= 45).map(x => x.text).join(' ') + ' ' + extra.join(' ');
   return { text, conf: h.data.confidence ?? 0, bin };
 }
 
@@ -230,10 +236,10 @@ export async function processImage(file, buf, onProgress, onStatus) {
     onProgress?.(`imagen ${i + 1}/${cvs.length}: corrigiendo y aplicando OCR…`);
     const { canvas, steps } = enhance(cvs[i]);
     let { text, conf } = await ocr(canvas, onStatus), processed = canvas;
-    if (conf < 80 || text.length < 400) {
+    if (conf < 85 || text.length < 400) {
       try {
         const d = await ocrDense(cvs[i], onStatus);
-        if (d.text.length > text.length * 1.15 || d.conf > conf) { text = d.text; conf = Math.max(conf, d.conf); processed = d.bin; steps.push({ step: 'ocr_denso', detail: 'iluminación normalizada, color y líneas largas eliminados, x3, lectura horizontal y vertical' }); }
+        const m = mergeDense(text, d.text); if (m !== text) { text = m; conf = Math.max(conf, d.conf); steps.push({ step: 'ocr_denso', detail: 'iluminación normalizada, color y líneas largas eliminados, x3, lectura horizontal y vertical' }); }
       } catch (e) { steps.push({ step: 'ocr_denso', detail: 'no se pudo aplicar: ' + (e.message || e) }); }
     }
     out.push({ pageNo: i + 1, method: 'ocr', conf, text, steps, processed: await canvasBlob(processed) });
@@ -266,7 +272,7 @@ export async function processPdf(buf, onProgress, onStatus) {
       await page.render({ canvas: c, canvasContext: ctx, viewport: vp }).promise;
       const { canvas, steps } = enhance(c);
       let r = await ocr(canvas, onStatus);
-      if (r.conf < 70) { try { const d = await ocrDense(c, onStatus); if (d.text.length > r.text.length * 1.15) { r = { text: d.text, conf: Math.max(r.conf, d.conf) }; steps.push({ step: 'ocr_denso', detail: 'segunda lectura para plano denso (más texto reconocido)' }); } } catch {} }
+      if (r.conf < 70) { try { const d = await ocrDense(c, onStatus); const m = mergeDense(r.text, d.text); if (m !== r.text) { r = { text: m, conf: Math.max(r.conf, d.conf) }; steps.push({ step: 'ocr_denso', detail: 'segunda lectura para plano denso (más texto reconocido)' }); } } catch {} }
       steps.unshift({ step: 'render_pdf', detail: `página rasterizada a ${Math.round(scale * 72)} dpi para OCR` });
       out.push({ pageNo: n, method: 'ocr', conf: r.conf, text: r.text, steps, processed: null });
       page.cleanup();

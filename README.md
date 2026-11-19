@@ -143,3 +143,9 @@ Límite: foto de monitor con moiré fuerte; para mejores resultados, exportar el
 
 ## v0.18
 Resultados de búsqueda: las acciones «abrir original · ver / editar · más como este · eliminar» pasan a la línea del título, a la derecha de la etiqueta (p. ej. «General»).
+
+## v0.19 — Texto buscado localizado dentro del original
+- PDF con texto: sombreado amarillo exacto sobre el texto (ya existía).
+- Fotos/imágenes y PDF escaneados (sin capa de texto): al abrir, se localiza el texto con OCR con coordenadas y se rodea con un rectángulo de borde rojo (con un tenue sombreado amarillo). La posición es aproximada; las coordenadas se guardan en la página para no repetir el OCR (la primera vez tarda unos segundos, más en fotos grandes).
+- Planos DWG/DXF/DGN: el visor busca y resalta el texto (ya existía). Word/Excel/PowerPoint/correo: sombreado amarillo en el texto extraído (no se puede dibujar sobre la maquetación original).
+- OCR denso: ahora se añade a la lectura normal en vez de sustituirla, para no empeorar imágenes limpias.

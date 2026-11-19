@@ -442,10 +442,10 @@ async function openOriginal(id, page) {
   try {
     const d = docsById.get(id), f = await getFileOfDoc(d), ext = extOf(d.name), nm = d.title || d.name;
     if (d.kind === 'plano' && ['dwg', 'dxf', 'dgn'].includes(ext)) { const { openCadViewer } = await import('./cadview.js'); return openCadViewer({ blob: f, name: nm, ext, terms: lastTerms }); }
-    if (d.kind === 'pdf') return openViewer({ blob: new Blob([f], { type: 'application/pdf' }), name: nm, pageNo: page || 1, terms: lastTerms });
+    if (d.kind === 'pdf') return openViewer({ blob: new Blob([f], { type: 'application/pdf' }), name: nm, pageNo: page || 1, terms: lastTerms, docId: d.id });
     const { openPreview } = await import('./preview.js');
     const pages = (await DB.byIndex('pages', 'docId', d.id)).sort((a, b) => a.pageNo - b.pageNo);
-    return openPreview({ blob: f, name: nm, file: d.name, ext, kind: d.kind, pages, pageNo: page || 1, terms: lastTerms, fmt: p => d.kind === 'correo' ? mailBody(p.text) : p.text });
+    return openPreview({ blob: f, name: nm, file: d.name, ext, kind: d.kind, pages, pageNo: page || 1, terms: lastTerms, docId: d.id, fmt: p => d.kind === 'correo' ? mailBody(p.text) : p.text });
   } catch (e) { addMsg('error', esc(e.message)); }
 }
 async function openProcessed(id, page) {
