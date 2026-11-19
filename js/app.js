@@ -1,12 +1,18 @@
 import { parseDoc, parseMail } from './parse.js';
 import { DB } from './db.js';
-import { sha256, processPdf, processImage } from './proc.js';
+import { sha256, processPdf, processImage, openPdfDoc } from './proc.js';
 import { buildModel, renderHtml } from './report.js';
 import { toDocx, toPdf, toXlsx, download, reportName } from './export.js';
 import { Store } from './store.js';
 import { Extras, encryptBytes, decryptBytes } from './extras.js';
 import { packXlsx } from './export.js';
-import { initPanels, synVariants } from './panels.js';
+import * as Eq from './equipos.js';
+import * as Dup from './duplicados.js';
+import { openOcrReview } from './ocrreview.js';
+import { initPanels, synVariants as synV0 } from './panels.js';
+import { prepare as semPrepare, semVariants, explain as semExplain } from './semantic.js';
+let SEM = false;
+const synVariants = w => SEM ? [...new Set([...synV0(w), ...semVariants(w)])] : synV0(w);
 import { openViewer } from './viewer.js';
 import { compareDocs, hunks } from './compare.js';
 import { parseValueQuery, matchValues, equiv } from './units.js';
@@ -136,6 +142,16 @@ async function ingest({ file, buf, key, path, source, via, fileDate, parent, roo
       setStatus(`${name}: leyendo ${FORMAT_NAME[ext] || ext}…`, 'info');
       const r = await parseDoc(ext, buf.slice(0));   // en un hilo aparte: la pantalla no se bloquea
       pages = r.pages.map(x => ({ pageNo: x.pageNo, label: x.label, method: kind === 'plano' ? 'plano' : 'documento', conf: null, text: x.text, steps: [note], processed: null }));
+      if (kind === 'plano' && !cancel) {   // OCR del dibujo: texto trazado con líneas (no como entidad de texto) o presente solo en la imagen del plano
+        try {
+          setStatus(`${name}: dibujando el plano para OCR…`, 'info');
+          const { cadScene, renderStrokes } = await import('./cadview.js'), { ocrClean, mergeDense } = await import('./proc.js'), sc = await cadScene(ext, new Uint8Array(buf.slice(0)));
+          if (sc.strokes.length > 20) {
+            const d = await ocrClean(renderStrokes(sc), t => setStatus(`${name}: OCR del dibujo… ${t || ''}`, 'info')), have = pages.map(x => x.text).join('\n'), m = mergeDense(have, d.text);
+            if (m !== have) pages.push({ pageNo: pages.length + 1, label: 'OCR del dibujo', method: 'ocr', conf: Math.max(1, d.conf || 60), text: m.slice(have.length).replace(/^\s*\[[^\]]*\]\s*/, ''), steps: [{ step: 'ocr_dibujo', detail: 'plano dibujado a imagen y leído con OCR; solo se añaden palabras que no estaban en el texto extraído' }], processed: null });
+          }
+        } catch (e) { pages.forEach(x => x.steps = [...(x.steps || []), { step: 'ocr_dibujo', detail: 'no se pudo aplicar: ' + (e.message || e) }]); }
+      }
       mailAtts = r.atts;   // ZIP: sus archivos · Word/Excel/PowerPoint: imágenes incrustadas (OCR automático)
     } else pages = kind === 'pdf' ? await processPdf(buf, onP, onS) : await processImage(file, buf, onP, onS);
     let low = 0; const mini_docs = [];
@@ -468,18 +484,20 @@ function snippet(text, terms) {
   out += esc(text.slice(pos, end));
   return (start > 0 ? '… ' : '') + out.replace(/\n/g, ' ') + (end < text.length ? ' …' : '');
 }
-const readSpec = () => ({ q: $('#q').value.trim(), kind: $('#kind').value, ftype: $('#ftype').value, desde: $('#desde').value, hasta: $('#hasta').value, asunto: $('#asunto').value.trim(), remitente: $('#remitente').value.trim(), etiqueta: $('#etiqueta').value.trim(), fz: $('#fz').checked, sust: $('#sust').checked });
-const writeSpec = sp => { $('#q').value = sp.q || ''; $('#kind').value = sp.kind || ''; $('#ftype').value = sp.ftype || ''; $('#desde').value = sp.desde || ''; $('#hasta').value = sp.hasta || ''; $('#asunto').value = sp.asunto || ''; $('#remitente').value = sp.remitente || ''; $('#etiqueta').value = sp.etiqueta || ''; $('#fz').checked = !!sp.fz; $('#sust').checked = !!sp.sust; };
+const readSpec = () => ({ q: $('#q').value.trim(), kind: $('#kind').value, ftype: $('#ftype').value, desde: $('#desde').value, hasta: $('#hasta').value, asunto: $('#asunto').value.trim(), remitente: $('#remitente').value.trim(), etiqueta: $('#etiqueta').value.trim(), fz: $('#fz').checked, sem: $('#sem').checked, sust: $('#sust').checked });
+const writeSpec = sp => { $('#q').value = sp.q || ''; $('#kind').value = sp.kind || ''; $('#ftype').value = sp.ftype || ''; $('#desde').value = sp.desde || ''; $('#hasta').value = sp.hasta || ''; $('#asunto').value = sp.asunto || ''; $('#remitente').value = sp.remitente || ''; $('#etiqueta').value = sp.etiqueta || ''; $('#fz').checked = !!sp.fz; $('#sem').checked = !!sp.sem; $('#sust').checked = !!sp.sust; };
 const docDay = d => (d.emailDate || d.fileDate).slice(0, 10);
 const docFilter = sp => {
   const ft = sp.ftype || '', kind = sp.kind || '', desde = sp.desde || '', hasta = sp.hasta || '', asu = normTerm(sp.asunto || ''), rem = normTerm(sp.remitente || ''), tag = normTerm(sp.etiqueta || '');
   return d => d && d.status === 'ok' && inProj(d) && (!sp.sust || !d.superseded) && (!kind || d.kind === kind) && (!ft || (ft === 'img' ? d.kind === 'imagen' : extOf(d.name) === ft)) && (!desde || docDay(d) >= desde) && (!hasta || docDay(d) <= hasta)
     && (!asu || normTerm(d.subject || '').includes(asu)) && (!rem || normTerm(d.sender || '').includes(rem)) && (!tag || normTerm((d.tags || '') + ' ' + (d.title || '')).includes(tag));
 };
+const words0 = q => parseQuery(q || '').words;
 const FUZZY = t => t.length > 4 ? 0.2 : false;   // erratas de OCR: hasta ~20 % de letras distintas en palabras de más de 4 letras
 async function runSearch(spec, render = true) {   // render=false: solo devuelve los ids de documento (búsquedas guardadas)
   const sp = spec || readSpec(), okDoc = docFilter(sp), CAP = render ? 100 : 500;
   let rows = [], terms = [], hdr = '';
+  SEM = !!sp.sem; if (SEM) await semPrepare();
   const vq = sp.q ? parseValueQuery(sp.q) : null, q = vq ? vq.rest : sp.q;   // «caudal > 5000 m3/h»: valor con unidad normalizada
   if (q || vq) {
     const { words, phrases } = parseQuery(q || '');
@@ -499,6 +517,7 @@ async function runSearch(spec, render = true) {   // render=false: solo devuelve
       const tt = [...terms, ...(sp.fz ? (mt || []) : []), ...(vm || []).map(v => v.raw)];
       rows.push({ d: docsById.get(docId), p, score, snip: render ? snippet(p.text, tt) + (vm ? ` <span class="m">⟶ ${vm.slice(0, 4).map(v => esc(v.raw) + (equiv(v) ? ' (' + esc(equiv(v)) + ')' : '')).join(' · ')}</span>` : '') : '' });
     }
+    if (render && SEM && words0(q).length) hdr += 'Por significado: ' + words0(q).map(semExplain).filter(Boolean).join(' · ') + ' · ';
     if (render && vq) hdr = `Valor buscado: ${vq.cond.label} (${vq.cond.dim}; unidades equivalentes incluidas) · `;
   } else {
     for (const d of [...docsById.values()].filter(okDoc).sort((a, b) => b.id - a.id).slice(0, render ? 30 : CAP)) {
@@ -584,6 +603,8 @@ async function showDoc(id, page, stay = false) {
     ${chkHtml(d)}
     ${flow.linksHtml(d)}
     ${d.note ? `<div class="msg ok" style="background:#fffbea;border-color:#ecd98a;color:#1c2430">📝 ${esc(d.note)}</div>` : ''}
+    ${evForm(d, pg)}
+    ${pg.method === 'ocr' && (d.kind === 'imagen' || d.kind === 'pdf') ? '<div><button class="sec" data-ocrrev="1">Revisar OCR (recorte + texto)</button></div>' : ''}
     ${pg.edited ? '<div class="m"><span class="tag warn">texto corregido manualmente</span> <a href="#" data-restxt="1">volver al texto extraído originalmente</a></div>' : ''}
     <pre id="pagetext">${esc(d.kind === 'correo' ? mailBody(pg.text) : pg.text) || '(sin texto)'}</pre>
     <div class="row"><button class="sec" id="markbtn" data-doc="${id}" data-page="${pg.pageNo}">★ Marcar selección como importante</button><button class="sec" id="reqbtn" data-doc="${id}" data-page="${pg.pageNo}">☑ Añadir selección como requisito</button><span class="m">Selecciona un fragmento del texto y pulsa el botón: irá a la sección «Puntos marcados» del informe.</span></div>
@@ -723,8 +744,13 @@ async function importProject(file) {
 
 // ---- eventos ----
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-detail],[data-proc],[data-rmroot],[data-markdel],[data-marknote],[data-act],[data-restxt],[data-similar]'); if (!t) return;
+  const t = e.target.closest('[data-open],[data-detail],[data-proc],[data-rmroot],[data-markdel],[data-marknote],[data-act],[data-restxt],[data-similar],[data-eq],[data-ocrrev],[data-inc],[data-evdel],[data-cmp]'); if (!t) return;
   e.preventDefault();
+  if (t.dataset.cmp) { selected.clear(); t.dataset.cmp.split(',').forEach(i => selected.add(+i)); cmpSwap = false; return compareSelected(); }
+  if (t.dataset.inc != null) return addIncAsConflict(+t.dataset.inc);
+  if (t.dataset.evdel) return delEvidence(t.dataset.evdel);
+  if (t.dataset.eq) return Eq.ficha($('#eq-ficha'), t.dataset.eq, eqMap, docsById);
+  if (t.dataset.ocrrev) return reviewOcr(+$('#detail').dataset.doc, +$('#detail').dataset.page);
   if (t.dataset.similar) return similarTo(+t.dataset.similar, +t.dataset.page);
   if (t.dataset.act) { const id = +t.dataset.id; const A = t.dataset.act;
     if (A === 'untrash') return untrash(id);
@@ -785,6 +811,7 @@ async function compareSelected() {
     <h2 style="margin-top:10px">Valores técnicos que cambian</h2>${r.values.length ? `<table><tr><th>Dónde</th><th>Categoría</th><th>Valor</th><th>Texto literal</th><th>Ubicación</th></tr>${r.values.map(v => `<tr><td>${v.side}</td><td>${esc(v.cat)}</td><td><b>${esc(v.value)}</b></td><td>${esc(v.ctx)}</td><td>${esc(String(v.page))}</td></tr>`).join('')}</table>` : '<div class="empty">Los mismos valores detectados en ambas versiones.</div>'}
     <h2 style="margin-top:10px">Cambios de texto</h2>${hs.length ? hs.map(h => `<div style="border:1px solid var(--line);border-radius:6px;margin:6px 0;padding:4px 8px;font-size:13px">${h.map(o => o.op === '=' ? `<div class="m">&nbsp;&nbsp;${esc(o.a.t)}</div>` : o.op === '-' ? `<div style="background:#fde8e6;color:#7a1b12"><span class="m">A · ${loc(o)}</span> − ${esc(o.a.t)}</div>` : `<div style="background:#e5f6ea;color:#0f5a2a"><span class="m">B · ${loc(o)}</span> + ${esc(o.b.t)}</div>`).join('')}</div>`).join('') : '<div class="empty">Sin cambios de texto.</div>'}`;
   goTab('documentos'); $('#cmpcard').hidden = false; $('#cmpcard').scrollIntoView({ behavior: 'smooth' });
+  if (x.kind === 'plano' && y.kind === 'plano') cadCompare(x, y).catch(e => { $('#cmp').insertAdjacentHTML('beforeend', `<p class="m">Comparación gráfica no disponible: ${esc(e.message || e)}</p>`); });
   await Extras.log('Comparación de versiones', `${x.name} ↔ ${y.name}`, `+${r.added} −${r.removed}`);
 }
 document.addEventListener('click', e => {
@@ -892,10 +919,17 @@ $('#rc-logo').onchange = async e => {
 
 // ---- informe resumen ----
 let reportModel = null, reportSpec = null;   // reportSpec: 'sel' | 'res' | 'all' (para regenerar tras editar/eliminar)
-const SPEC = { sel: ['documentos seleccionados', () => [...selected]], res: ['resultados de la búsqueda actual', () => lastResultIds], all: ['todos los documentos indexados' + (curProject ? ` (proyecto ${curProject})` : ''), () => [...docsById.values()].filter(inProj).map(d => d.id)] };
+const QSPEC = {
+  pend: ['pendientes de revisar', () => [...docsById.values()].filter(d => inProj(d) && d.status === 'ok' && !d.parentId && !d.check?.rev).map(d => d.id)],
+  nov: ['novedades de los últimos 7 días', () => [...docsById.values()].filter(d => inProj(d) && d.status === 'ok' && d.ingestedAt && Date.now() - new Date(d.ingestedAt) < 7 * 864e5).map(d => d.id)],
+  ocrd: ['documentos con OCR de baja confianza', async () => { const ids = new Set(); for (const p of await DB.all('pages')) if (p.method === 'ocr' && p.conf != null && p.conf < LOW_CONF && inProj(docsById.get(p.docId) || {})) ids.add(p.docId); return [...ids]; }],
+  marc: ['documentos con puntos marcados ★', async () => [...new Set((await DB.all('marks')).map(m => m.docId))].filter(id => docsById.get(id) && inProj(docsById.get(id)))],
+  conf: ['documentos con comprobaciones pendientes', () => [...docsById.values()].filter(d => inProj(d) && d.status === 'ok' && d.check?.pen).map(d => d.id)],
+};
+const SPEC = { ...QSPEC, sel: ['documentos seleccionados', () => [...selected]], res: ['resultados de la búsqueda actual', () => lastResultIds], all: ['todos los documentos indexados' + (curProject ? ` (proyecto ${curProject})` : ''), () => [...docsById.values()].filter(inProj).map(d => d.id)] };
 async function makeReport(spec, quiet) {
-  const [scope0, get] = SPEC[spec]; reportSpec = spec; const scope = spec === 'all' ? 'todos los documentos indexados' + (curProject ? ` (proyecto ${curProject})` : '') : scope0;
-  const ids = get().filter(id => docsById.get(id)?.status === 'ok');
+  const [scope0, get] = SPEC[spec]; reportSpec = spec; const scope = QSPEC[spec] ? 'informe rápido: ' + scope0 : spec === 'all' ? 'todos los documentos indexados' + (curProject ? ` (proyecto ${curProject})` : '') : scope0;
+  const ids = (await get()).filter(id => docsById.get(id)?.status === 'ok');
   if (!ids.length) { $('#reportcard').hidden = true; reportModel = null; return quiet ? null : addMsg('error', 'No hay documentos indexados para el informe.'); }
   ids.sort((a, b) => ((docsById.get(a).parentId ?? a) - (docsById.get(b).parentId ?? b)) || a - b);   // cada correo seguido de sus adjuntos
   const items = [];
@@ -992,7 +1026,7 @@ $('#projnew').onclick = async () => {
 $('#user').value = localStorage.getItem('fb-user') || ''; $('#user').onchange = e => { localStorage.setItem('fb-user', e.target.value.trim()); };
 const setTheme = t => { document.documentElement.dataset.theme = t; localStorage.setItem('fb-theme', t); $('#theme').textContent = t === 'dark' ? '☀' : '🌙'; };
 setTheme(localStorage.getItem('fb-theme') || 'light'); $('#theme').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
-const TABS = ['inicio', 'buscar', 'requisitos', 'informes', 'documentos', 'datos'];
+const TABS = ['inicio', 'buscar', 'requisitos', 'informes', 'equipos', 'documentos', 'datos'];
 let curRes = -1;
 function moveRes(delta) {
   const rs = [...document.querySelectorAll('#results .res')]; if (!rs.length) return false;
@@ -1057,10 +1091,10 @@ async function renderMatrix() {
   const related = async r => { const t = topTerms(r.text, 8); return t.length < 3 ? [] : mini.search({ combineWith: 'OR', queries: t }, { prefix: false, fuzzy: false }).filter(h => okDoc(docsById.get(h.docId))).slice(0, 8).map(h => ({ docId: h.docId, pageNo: h.pageNo })); };
   try { mxRows = await buildMatrix({ reqs, docsById, DB, okDoc, related }); } finally { setStatus(''); }
   const link = (id, pg, lab) => { const d = docsById.get(id); return d ? `<a href="#" data-detail="${id}" data-page="${pg}">${esc(d.title || d.name)}</a> <span class="m">${esc(lab)}</span>` : ''; };
-  $('#mx').innerHTML = `<table><tr><th>#</th><th>Requisito (literal)</th><th>Origen</th><th>Estado</th><th>Aparece con el mismo texto en</th><th>Menciones relacionadas <span class="m">(aproximadas: revisar)</span></th><th>Control del origen</th></tr>${mxRows.map(({ r, origin, same, rel }) =>
+  $('#mx').innerHTML = `<table><tr><th>#</th><th>Requisito (literal)</th><th>Origen</th><th>Estado</th><th>Aparece con el mismo texto en</th><th>Menciones relacionadas <span class="m">(aproximadas: revisar)</span></th><th>Evidencias</th><th>Cumplimiento</th><th>Control del origen</th></tr>${mxRows.map(({ r, origin, same, rel }) =>
     `<tr><td>${r.id}</td><td>${esc(r.text.length > 220 ? r.text.slice(0, 217) + '…' : r.text)}</td><td>${link(r.docId, r.pageNo, 'pág. ' + r.pageNo)}</td><td>${esc(r.status)}${r.due ? `<div class="m">vence ${esc(r.due)}</div>` : ''}</td>
-    <td>${same.length ? same.map(x => link(x.docId, x.pageNo, x.label)).join('<br>') : '<span class="m">solo en el origen</span>'}</td><td>${rel.length ? rel.map(x => link(x.docId, x.pageNo, 'pág. ' + x.pageNo)).join('<br>') : '<span class="m">—</span>'}</td><td>${esc(origin ? chkLabel(origin) : '')}</td></tr>`).join('')}</table>
-    <div class="m" style="margin-top:6px">«Mismo texto» = el fragmento literal del requisito se encuentra tal cual en esa página. «Relacionadas» = páginas que comparten sus palabras más características; es solo una ayuda de búsqueda, no una conclusión.</div>`;
+    <td>${same.length ? same.map(x => link(x.docId, x.pageNo, x.label)).join('<br>') : '<span class="m">solo en el origen</span>'}</td><td>${rel.length ? rel.map(x => link(x.docId, x.pageNo, 'pág. ' + x.pageNo)).join('<br>') : '<span class="m">—</span>'}</td><td>${(r.ev || []).length ? r.ev.map((x, i) => `<span style="color:${VERD[x.v][1]}">${VERD[x.v][0]}</span> ${link(x.docId, x.pageNo, 'pág. ' + x.pageNo)}${x.note ? ` <span class="m">${esc(x.note)}</span>` : ''} <a href="#" data-evdel="${r.id}:${i}" title="Quitar">✕</a>`).join('<br>') : '<span class="m">—</span>'}</td><td><b>${complianceOf(r)}</b></td><td>${esc(origin ? chkLabel(origin) : '')}</td></tr>`).join('')}</table>
+    <div class="m" style="margin-top:6px">${(() => { const c = { cumple: 0, 'no cumple': 0, dudoso: 0, 'sin evidencia': 0 }; mxRows.forEach(m => c[complianceOf(m.r)]++); return `Cumplimiento: ${c.cumple} cumple · ${c['no cumple']} no cumple · ${c.dudoso} dudoso · ${c['sin evidencia']} sin evidencia. `; })()}«Mismo texto» = el fragmento literal del requisito se encuentra tal cual en esa página. «Relacionadas» = páginas que comparten sus palabras más características; es solo una ayuda de búsqueda, no una conclusión.</div>`;
   $('#mx-xlsx').disabled = false;
 }
 $('#mx-go').onclick = () => renderMatrix().catch(e => { setStatus(''); addMsg('error', esc(e.message)); });
@@ -1069,8 +1103,8 @@ $('#mx-xlsx').onclick = () => {
   const nm = id => { const d = docsById.get(id); return d ? (d.title || d.subject || d.name) : '(eliminado)'; }, f = (id, pg, lab) => `${nm(id)} (${lab || 'pág. ' + pg})`;
   const docs = [...docsById.values()].filter(d => d.status === 'ok' && inProj(d)), ck = (d, k) => d.check?.[k] ? `${d.check[k].by} · ${fdate(d.check[k].at)}` : '';
   download(packXlsx([
-    { name: 'Matriz de trazabilidad', widths: [6, 70, 34, 8, 14, 22, 12, 60, 60, 12], rows: [['#', 'Requisito (literal)', 'Documento de origen', 'Pág.', 'Estado', 'Concepto', 'Vence', 'Aparece con el mismo texto en', 'Menciones relacionadas (aproximadas)', 'Control del origen'],
-      ...mxRows.map(({ r, origin, same, rel }) => [String(r.id), r.text, nm(r.docId), String(r.pageNo), r.status, r.group || '', r.due || '', same.map(x => f(x.docId, x.pageNo, x.label)).join('; '), rel.map(x => f(x.docId, x.pageNo)).join('; '), origin ? chkLabel(origin) : ''])] },
+    { name: 'Matriz de trazabilidad', widths: [6, 70, 34, 8, 14, 22, 12, 60, 60, 60, 14, 12], rows: [['#', 'Requisito (literal)', 'Documento de origen', 'Pág.', 'Estado', 'Concepto', 'Vence', 'Aparece con el mismo texto en', 'Menciones relacionadas (aproximadas)', 'Evidencias (veredicto · documento · pág.)', 'Cumplimiento', 'Control del origen'],
+      ...mxRows.map(({ r, origin, same, rel }) => [String(r.id), r.text, nm(r.docId), String(r.pageNo), r.status, r.group || '', r.due || '', same.map(x => f(x.docId, x.pageNo, x.label)).join('; '), rel.map(x => f(x.docId, x.pageNo)).join('; '), (r.ev || []).map(x => `${VERD[x.v][0]} · ${f(x.docId, x.pageNo)}${x.note ? ' · ' + x.note : ''}`).join('; '), complianceOf(r), origin ? chkLabel(origin) : ''])] },
     { name: 'Lista de comprobación', widths: [50, 28, 28, 28, 28, 14], rows: [['Documento', 'Revisado', 'Contrastado con otros documentos', 'Valores verificados contra el original', 'Pendiente de respuesta', 'Sustituido'],
       ...docs.map(d => [d.title || d.path?.join('/') || d.name, ck(d, 'rev'), ck(d, 'con'), ck(d, 'val'), ck(d, 'pen'), d.superseded ? 'sí' : ''])] },
   ]), `feedback-matriz-trazabilidad-${new Date().toISOString().slice(0, 10)}.xlsx`); Extras.log('Matriz de trazabilidad exportada', '.xlsx', `${mxRows.length} requisitos`);
@@ -1103,3 +1137,131 @@ addEventListener('unhandledrejection', e => { const m = e.reason?.message || Str
   window.__feedback = { Store, setDataDir: h => { Store.dir = h; Store.status(); }, addRoot: h => addRoot(h, false), scan, importFiles, ready: true };   // gancho para pruebas automáticas
   await autoPurge().catch(() => {}); loadCfg(); await refresh(); await runSearch(); renderVersions();
 })();
+
+// ---- Equipos / etiquetas técnicas ----
+let eqMap = new Map();
+async function eqRefresh() { $('#eq-list').innerHTML = '<div class="m">Calculando…</div>'; eqMap = await Eq.buildIndex(docsById, inProj); Eq.renderList($('#eq-list'), eqMap, docsById, $('#eq-q').value, $('#eq-kind').value); $('#eq-ficha').innerHTML = ''; }
+$('#eq-go').onclick = eqRefresh; $('#eq-q').oninput = $('#eq-kind').onchange = () => Eq.renderList($('#eq-list'), eqMap, docsById, $('#eq-q').value, $('#eq-kind').value);
+document.querySelector('[data-go=equipos]').addEventListener('click', () => { if (!eqMap.size) eqRefresh(); });
+// ---- Revisión asistida del OCR ----
+async function reviewOcr(id, pageNo) {
+  const d = docsById.get(id), f = await getFileOfDoc(d), ext = extOf(d.name);
+  const makeCanvas = async () => {
+    if (d.kind === 'pdf') { const pdf = await openPdfDoc(await f.arrayBuffer()).promise, pg = await pdf.getPage(pageNo), sc = Math.min(4.2, 4200 / Math.max(pg.view[2] - pg.view[0], pg.view[3] - pg.view[1])), v = pg.getViewport({ scale: sc }), c = document.createElement('canvas'); c.width = Math.floor(v.width); c.height = Math.floor(v.height); await pg.render({ canvasContext: c.getContext('2d'), viewport: v }).promise; return c; }
+    const c = document.createElement('canvas');
+    if (ext === 'tif' || ext === 'tiff') { const buf = await f.arrayBuffer(), ifd = UTIF.decode(buf)[0]; UTIF.decodeImage(buf, ifd); c.width = ifd.width; c.height = ifd.height; c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(UTIF.toRGBA8(ifd)), ifd.width, ifd.height), 0, 0); return c; }
+    const bm = await createImageBitmap(f); c.width = bm.width; c.height = bm.height; c.getContext('2d').drawImage(bm, 0, 0); return c;
+  };
+  return openOcrReview({ docId: id, pageNo, name: d.title || d.name, makeCanvas, getText: async () => (await DB.get('pages', [id, pageNo])).text, setText: t => setPageText(id, pageNo, t) });
+}
+
+async function cadCompare(x, y) {
+  const { cadScene, diffScenes } = await import('./cadview.js'), u = async d => new Uint8Array(await (await getFileOfDoc(d)).arrayBuffer());
+  const [sa, sb] = [await cadScene(extOf(x.name), await u(x)), await cadScene(extOf(y.name), await u(y))], r = diffScenes(sa, sb);
+  const box = document.createElement('div'); box.innerHTML = `<h2 style="margin-top:10px">Comparación gráfica del dibujo</h2><p class="m"><span class="tag" style="color:#b42318">rojo: ${r.onlyA} trazo(s) solo en A</span><span class="tag" style="color:#15803d">verde: ${r.onlyB} trazo(s) solo en B</span><span class="tag">gris: ${r.both} comunes</span> · coordenadas redondeadas: un desplazamiento mínimo cuenta como cambio.</p>
+    <p class="m"><b>Textos eliminados:</b> ${r.textsRemoved.slice(0, 40).map(esc).join(' · ') || '—'}<br><b>Textos añadidos:</b> ${r.textsAdded.slice(0, 40).map(esc).join(' · ') || '—'}</p>`;
+  r.canvas.style.cssText = 'max-width:100%;border:1px solid var(--line);background:#fff'; box.appendChild(r.canvas); $('#cmp').appendChild(box);
+}
+
+$('#rep-quick').onchange = e => { const v = e.target.value; e.target.value = ''; if (v) makeReport(v); };
+// ---- copia de seguridad: aviso y salud del índice ----
+{
+  const _log = Extras.log.bind(Extras); Extras.log = async (a, ...r) => { if (/exportad/i.test(a)) try { localStorage.setItem('fb-lastcopy', String(Date.now())); } catch { /* nada */ } return _log(a, ...r); };
+  const days = () => +(localStorage.getItem('fb-bkdays') ?? 7), last = () => +(localStorage.getItem('fb-lastcopy') || 0);
+  $('#bk-days').value = String(days()); $('#bk-days').onchange = e => { localStorage.setItem('fb-bkdays', e.target.value); bkCheck(); };
+  window.bkCheck = bkCheck;
+  function bkCheck() {
+    const n = days(), L = last(), el = $('#bkbanner'), has = [...docsById.values()].some(d => d.status === 'ok');
+    $('#bk-last').textContent = L ? 'Última copia registrada: ' + new Date(L).toLocaleString('es-ES') : 'Aún no hay copia registrada en este equipo';
+    if (!n || !has || (L && Date.now() - L < n * 864e5)) { el.hidden = true; return; }
+    el.hidden = false; el.innerHTML = `⚠ ${L ? `Hace ${Math.floor((Date.now() - L) / 864e5)} día(s) que no haces una copia de seguridad.` : 'Todavía no has hecho ninguna copia de seguridad.'} <a href="#" id="bk-now">Ir a «Datos y copias»</a> · <a href="#" id="bk-snooze">recordar mañana</a>`;
+  }
+  document.addEventListener('click', e => { if (e.target.id === 'bk-now') { e.preventDefault(); goTab('datos'); } if (e.target.id === 'bk-snooze') { e.preventDefault(); localStorage.setItem('fb-lastcopy', String(Date.now() - (days() - 1) * 864e5)); bkCheck(); } });
+  setTimeout(bkCheck, 2500); setInterval(bkCheck, 3600e3);
+}
+$('#hl-go').onclick = async () => {
+  const ds = [...docsById.values()].filter(inProj), ok = ds.filter(d => d.status === 'ok'), ps = await DB.all('pages'), pm = new Map();
+  for (const p of ps) { const a = pm.get(p.docId) || []; a.push(p); pm.set(p.docId, a); }
+  const err = ds.filter(d => d.status === 'error'), vac = ok.filter(d => (pm.get(d.id) || []).every(p => (p.text || '').trim().length < 20)), low = ok.filter(d => (pm.get(d.id) || []).some(p => p.method === 'ocr' && p.conf != null && p.conf < LOW_CONF));
+  const dups = dupDocs(), unrev = ok.filter(d => !d.parentId && !d.check?.rev), pen = ok.filter(d => d.check?.pen), trash = ds.filter(d => d.trashedAt), sup = ok.filter(d => d.superseded);
+  const li = (a, n, txt, act) => `<tr><td><b>${n}</b></td><td>${a}</td><td class="m">${txt}</td><td>${act || ''}</td></tr>`, names = l => l.slice(0, 5).map(d => `<a href="#" data-detail="${d.id}" data-page="1">${esc(d.title || d.name)}</a>`).join(', ') + (l.length > 5 ? ` … (+${l.length - 5})` : '');
+  $('#hl-out').innerHTML = `<table><tr><th></th><th>Aspecto</th><th>Detalle</th><th></th></tr>
+    ${li('📄', ok.length, 'documentos indexados correctamente' + (ds.length - ok.length ? ` (${ds.length - ok.length} con otro estado)` : ''))}
+    ${li(err.length ? '❌' : '✅', err.length, 'con error al leer. ' + names(err), err.length ? '<a href="#" data-go-tab="documentos">ver en Documentos</a>' : '')}
+    ${li(vac.length ? '⚠' : '✅', vac.length, 'sin texto utilizable (¿escaneo sin OCR, vacío o protegido?). ' + names(vac))}
+    ${li(low.length ? '⚠' : '✅', low.length, `con páginas de OCR de baja confianza (<${LOW_CONF} %). ` + names(low), low.length ? '<a href="#" data-quick="ocrd">informe</a>' : '')}
+    ${li(dups.length ? '⚠' : '✅', dups.length, 'duplicados por contenido (mismo SHA-256)', dups.length ? '<a href="#" data-go-tab="documentos">revisar</a>' : '')}
+    ${li(unrev.length ? '🕓' : '✅', unrev.length, 'sin revisar', unrev.length ? '<a href="#" data-quick="pend">informe</a>' : '')}
+    ${li(pen.length ? '🕓' : '✅', pen.length, 'con comprobaciones pendientes', pen.length ? '<a href="#" data-quick="conf">informe</a>' : '')}
+    ${li('ℹ', sup.length, 'versiones sustituidas por otra más reciente')}${li('🗑', trash.length, 'en la papelera')}
+    ${li('📁', '', 'Ficheros movidos o modificados respecto a las carpetas enlazadas', '<a href="#" data-go-tab="datos">usar «Comprobar integridad»</a>')}</table>`;
+};
+document.addEventListener('click', e => { const a = e.target.closest('[data-quick],[data-go-tab]'); if (!a) return; e.preventDefault(); if (a.dataset.quick) makeReport(a.dataset.quick); else goTab(a.dataset.goTab); });
+
+// ---- equipos: exportar y detectar inconsistencias ----
+let incList = [];
+$('#eq-inc').onclick = async () => { if (!eqMap.size) await eqRefresh(); incList = Eq.inconsistencies(eqMap, docsById); Eq.renderInconsistencies($('#eq-incout'), incList, docsById); await Extras.log('Búsqueda de inconsistencias', 'Equipos', `${incList.length} propuesta(s)`); };
+async function addIncAsConflict(i) {
+  const x = incList[i]; if (!x) return; const first = x.items[0], text = `${x.tag} · ${x.dim}: ` + x.items.map(it => `${it.raw} (${docsById.get(it.docId)?.title || docsById.get(it.docId)?.name}, parte ${it.pageNo})`).join(' ≠ ');
+  const r = await panels.addReq({ docId: first.docId, pageNo: first.pageNo, text, status: 'conflicto', group: 'Inconsistencias entre documentos' });
+  await panels.changed(); addMsg(r ? 'ok' : 'duplicado', r ? 'Añadido a requisitos con estado «conflicto».' : 'Esa inconsistencia ya está en requisitos.');
+}
+$('#eq-xlsx').onclick = async () => {
+  if (!eqMap.size) await eqRefresh(); if (!eqMap.size) return addMsg('error', 'No hay etiquetas que exportar.');
+  const nm = id => { const d = docsById.get(id); return d ? (d.title || d.name) : ''; }, rows = [...eqMap.values()].sort((a, b) => a.value.localeCompare(b.value));
+  download(packXlsx([
+    { name: 'Equipos y etiquetas', widths: [24, 10, 10, 60, 24, 60], rows: [['Etiqueta', 'Tipo', 'Apariciones', 'Documentos', 'Partes', 'Valores cercanos (orientativos)'],
+      ...rows.map(r => { const vals = new Set(); r.occ.forEach(o => Eq.valuesNear(o.text, o.at).forEach(v => vals.add(v))); return [r.value, r.kind, String(r.occ.length), [...new Set(r.occ.map(o => nm(o.docId)))].join('; '), [...new Set(r.occ.map(o => o.pageNo))].join(', '), [...vals].slice(0, 20).join(' · ')]; })] },
+    { name: 'Apariciones', widths: [24, 50, 8, 100], rows: [['Etiqueta', 'Documento', 'Parte', 'Contexto'], ...rows.flatMap(r => r.occ.slice(0, 200).map(o => [r.value, nm(o.docId), String(o.pageNo), o.text.slice(Math.max(0, o.at - 70), o.at + r.value.length + 70).replace(/\s+/g, ' ')]))] },
+  ]), `feedback-equipos-${new Date().toISOString().slice(0, 10)}.xlsx`); Extras.log('Lista de equipos exportada', '.xlsx', `${rows.length} etiquetas`);
+};
+// ---- evidencias de requisitos y cumplimiento ----
+const VERD = { cumple: ['✔ cumple', '#15803d'], no: ['✖ no cumple', '#b42318'], dudoso: ['? dudoso', '#b45309'] };
+const complianceOf = r => { const e = r.ev || []; return !e.length ? 'sin evidencia' : e.some(x => x.v === 'no') ? 'no cumple' : e.some(x => x.v === 'dudoso') ? 'dudoso' : 'cumple'; };
+function evForm(d, pg) {
+  const reqs = panels.reqsInProj(); if (!reqs.length) return '';
+  return `<div class="row" style="margin-top:6px"><span class="m"><b>Evidencia de requisito:</b></span><select id="ev-req" style="max-width:300px">${reqs.map(r => `<option value="${r.id}">#${r.id} ${esc(r.text.slice(0, 60))}</option>`).join('')}</select><select id="ev-v"><option value="cumple">cumple</option><option value="no">no cumple</option><option value="dudoso">dudoso</option></select><input id="ev-note" placeholder="nota (opcional)" style="width:170px"><button class="sec" id="ev-add" data-doc="${d.id}" data-page="${pg.pageNo}">Vincular esta página</button></div>`;
+}
+document.addEventListener('click', async e => {
+  const b = e.target.closest('#ev-add'); if (!b) return; if (DB.readonly) return addMsg('error', 'Modo solo lectura activo.');
+  const r = Extras.d.reqs.find(x => x.id === +$('#ev-req').value); if (!r) return; r.ev ||= [];
+  const docId = +b.dataset.doc, pageNo = +b.dataset.page, v = $('#ev-v').value, note = $('#ev-note').value.trim(), old = r.ev.find(x => x.docId === docId && x.pageNo === pageNo);
+  if (old) Object.assign(old, { v, note, at: new Date().toISOString(), by: Extras.user() }); else r.ev.push({ docId, pageNo, v, note, at: new Date().toISOString(), by: Extras.user() });
+  await Extras.save(); await Extras.log('Evidencia vinculada', docsById.get(docId)?.name || '', `requisito #${r.id}: ${VERD[v][0]}`); addMsg('ok', `Evidencia vinculada al requisito #${r.id} (${VERD[v][0]}). Estado actual: ${complianceOf(r)}.`);
+  if (!$('#mx').innerHTML.includes('empty') && mxRows.length) renderMatrix().catch(() => {});
+});
+async function delEvidence(key) {
+  const [rid, i] = key.split(':').map(Number), r = Extras.d.reqs.find(x => x.id === rid); if (!r?.ev?.[i]) return; r.ev.splice(i, 1); await Extras.save(); await Extras.log('Evidencia desvinculada', `requisito #${rid}`); renderMatrix().catch(() => {});
+}
+
+// ---- duplicados y versiones ----
+$('#dup-go').onclick = async () => {
+  setStatus('Buscando documentos parecidos…', 'info');
+  const pairs = await Dup.findSimilar(docsById, inProj, +$('#dup-min').value, (n, t) => setStatus(`Comparando documentos (${n}/${t})…`, 'info'));
+  Dup.renderSimilar($('#dup-out'), pairs, docsById, revGroups([...docsById.values()].filter(inProj))); setStatus('', 'info'); await Extras.log('Búsqueda de duplicados', 'Documentos', `${pairs.length} pareja(s)`);
+};
+// ---- cobertura de requisitos ----
+function coverage() {
+  const withDesc = $('#cov-desc').checked, reqs = panels.reqsInProj().filter(r => withDesc || r.status !== 'descartado');
+  const C = ['cumple', 'dudoso', 'no cumple', 'sin evidencia'], zero = () => ({ cumple: 0, dudoso: 0, 'no cumple': 0, 'sin evidencia': 0, total: 0 });
+  const byG = new Map(), byD = new Map(), tot = zero();
+  for (const r of reqs) { const c = complianceOf(r), g = r.group || '(sin concepto)', d = docsById.get(r.docId), dn = d ? (d.title || d.name) : '(documento eliminado)';
+    for (const [m, k] of [[byG, g], [byD, dn], [null, null]]) { const o = m ? (m.get(k) || m.set(k, zero()).get(k)) : tot; o[c]++; o.total++; } }
+  return { reqs, C, byG, byD, tot };
+}
+const pct = (n, t) => t ? Math.round(100 * n / t) + ' %' : '—';
+$('#cov-go').onclick = () => {
+  const { reqs, C, byG, byD, tot } = coverage(); if (!reqs.length) return $('#cov-out').innerHTML = '<div class="empty">No hay requisitos en el proyecto.</div>';
+  const tbl = (m, h) => `<table><tr><th>${h}</th><th>Total</th>${C.map(c => `<th>${c}</th>`).join('')}<th>% cumple</th></tr>${[...m].sort((a, b) => b[1].total - a[1].total).map(([k, o]) => `<tr><td>${esc(k)}</td><td>${o.total}</td>${C.map(c => `<td>${o[c]}</td>`).join('')}<td>${pct(o.cumple, o.total)}</td></tr>`).join('')}</table>`;
+  $('#cov-out').innerHTML = `<p><b>${tot.total}</b> requisitos · ${C.map(c => `${c}: <b>${tot[c]}</b> (${pct(tot[c], tot.total)})`).join(' · ')}</p><h3>Por concepto</h3>${tbl(byG, 'Concepto')}<h3>Por documento de origen</h3>${tbl(byD, 'Documento')}`;
+};
+$('#cov-xlsx').onclick = () => {
+  const { reqs, C, byG, byD, tot } = coverage(); if (!reqs.length) return addMsg('error', 'No hay requisitos que exportar.');
+  const sheet = (m, h) => [[h, 'Total', ...C, '% cumple'], ...[...m].sort((a, b) => b[1].total - a[1].total).map(([k, o]) => [k, String(o.total), ...C.map(c => String(o[c])), pct(o.cumple, o.total)])];
+  download(packXlsx([
+    { name: 'Resumen', widths: [30, 10, 10, 10, 12, 14, 10], rows: [['Indicador', 'Valor'], ['Requisitos', String(tot.total)], ...C.map(c => [c, `${tot[c]} (${pct(tot[c], tot.total)})`])] },
+    { name: 'Por concepto', widths: [40, 8, 10, 10, 12, 14, 10], rows: sheet(byG, 'Concepto') },
+    { name: 'Por documento', widths: [50, 8, 10, 10, 12, 14, 10], rows: sheet(byD, 'Documento') },
+    { name: 'Detalle', widths: [6, 80, 30, 8, 14, 14, 60], rows: [['#', 'Requisito', 'Documento', 'Pág.', 'Estado', 'Cumplimiento', 'Evidencias'], ...reqs.map(r => { const d = docsById.get(r.docId); return [String(r.id), r.text, d ? (d.title || d.name) : '', String(r.pageNo), r.status, complianceOf(r), (r.ev || []).map(x => `${VERD[x.v][0]} · ${docsById.get(x.docId)?.name || ''} p.${x.pageNo}${x.note ? ' · ' + x.note : ''}`).join('; ')]; })] },
+  ]), `feedback-cobertura-requisitos-${new Date().toISOString().slice(0, 10)}.xlsx`); Extras.log('Informe de cobertura exportado', '.xlsx', `${tot.total} requisitos`);
+};

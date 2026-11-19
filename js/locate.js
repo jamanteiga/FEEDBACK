@@ -7,7 +7,7 @@ const readBoxes = async (w, cv, W0) => {
   const r = await w.recognize(cv, {}, { text: true, tsv: true }), W = cv.width, H = cv.height, out = [];
   for (const l of (r.data.tsv || '').split('\n')) {
     const a = l.split('\t'); if (a.length < 12 || a[0] !== '5' || !(a[11] || '').trim() || +a[10] < 25) continue;
-    out.push([a[11].trim(), +a[6] / W, +a[7] / H, +a[8] / W, +a[9] / H]);
+    out.push([a[11].trim(), +a[6] / W, +a[7] / H, +a[8] / W, +a[9] / H, Math.round(+a[10])]);
   }
   return out;
 };
@@ -24,9 +24,9 @@ export async function locateWords(canvas, onStatus) {
   await w.setParameters({ tessedit_pageseg_mode: '3' });
   return out;
 }
-export async function cachedBoxes(docId, pageNo, makeCanvas, onStatus) {
+export async function cachedBoxes(docId, pageNo, makeCanvas, onStatus, needConf = false) {
   const rec = docId != null ? await DB.get('pages', [docId, pageNo]) : null;
-  if (rec?.boxes) return rec.boxes;
+  if (rec?.boxes && (!needConf || rec.boxes[0]?.length >= 6)) return rec.boxes;
   const boxes = await locateWords(await makeCanvas(), onStatus);
   if (rec) { rec.boxes = boxes; try { await DB.put('pages', rec); } catch { /* sin caché */ } }
   return boxes;

@@ -1,3 +1,4 @@
+import { carveImages } from './carve.js';
 // Lectura de TEXTO de planos CAD sin convertirlos: DXF (texto y binario), DWG (R13–2018+, con LibreDWG compilado a WebAssembly)
 // y DGN (V7 directo; V8 de forma aproximada). Solo se extrae lo escrito en el plano (textos, cotas con texto, atributos de bloques
 // como el cajetín, capas y nombres de bloque). No se interpreta ni se "dibuja" nada: el original se abre con su programa.
@@ -84,11 +85,15 @@ export async function dwgDb(u8, kind = 'DWG') {
   const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
   const ptr = lw.dwg_read_data(ab, kind === 'DXF' ? m.Dwg_File_Type.DXF : m.Dwg_File_Type.DWG);
   if (!ptr) throw new Error('No se pudo leer el DWG (versión no admitida o archivo dañado).');
-  try { return lw.convert(ptr); } finally { try { lw.dwg_free(ptr); } catch { /* ya liberado */ } }
+  try { return lw.convert(ptr); } catch (e) {
+    if (/Aborted/i.test(String(e?.message || e))) { lwPromise = null; const v = String.fromCharCode(...u8.subarray(0, 6)); throw new Error(`El lector integrado no puede abrir este DWG (versión ${v}). Guárdalo desde AutoCAD como DXF o como DWG de una versión anterior (p. ej. «AutoCAD 2013») y vuelve a importarlo.`); }
+    throw e;
+  } finally { try { lw.dwg_free(ptr); } catch { /* ya liberado */ } }
 }
 export async function dwgPages(u8, kind = 'DWG') {
   const db = await dwgDb(u8, kind);
   const model = [], paper = [], attrs = [], blockLines = [], blockNames = [], counts = {};
+  const imgRefs = [], carved = [];
   const txt = (e, ctx, out) => {
     counts[e.type] = (counts[e.type] || 0) + 1;
     if (e.type === 'TEXT') out.push(cadText(e.text));
@@ -98,6 +103,7 @@ export async function dwgPages(u8, kind = 'DWG') {
     else if (e.type === 'DIMENSION') { const v = cadText(typeof e.text === 'string' ? e.text : '', true); if (v && v !== '<>') out.push(v); }
     else if (e.type === 'MULTILEADER' || e.type === 'MLEADER') { const v = cadText(e.contextData?.content?.text || e.text || '', true); if (v) out.push(v); }
     else if (e.type === 'INSERT') for (const a of e.attribs || []) txt(a, e.name, out);
+    else if (e.type === 'IMAGE' || e.type === 'OLE2FRAME') { const f = Object.values(e).filter(v => typeof v === 'string' && /\.(png|jpe?g|tiff?|bmp|gif|pdf|dwf)$/i.test(v)); f.forEach(v => imgRefs.push(v)); const d = Object.values(e).find(v => v instanceof Uint8Array && v.length > 3000); if (d) carved.push(...carveImages(d, 5)); }
   };
   const recs = db.tables?.BLOCK_RECORD?.entries || [];
   for (const b of recs) {
@@ -110,8 +116,9 @@ export async function dwgPages(u8, kind = 'DWG') {
   const layers = (db.tables?.LAYER?.entries || []).map(l => l.name).filter(Boolean);
   const verKey = typeof db.header?.ACADVER === 'string' ? db.header.ACADVER : '';
   const pages = [...paginate(model.filter(Boolean), 'espacio modelo'), ...paginate(paper.filter(Boolean), 'presentaciones (papel)'), ...paginate(attrs, 'atributos y cajetín'), ...paginate(blockLines, 'definición de bloques')];
+  if (imgRefs.length) pages.push({ label: 'imágenes referenciadas', text: 'Imágenes enlazadas desde el plano (archivos externos, no incrustados; localizarlos junto al DWG):\n' + dedupe(imgRefs).join('\n') });
   pages.push(infoPage(verKey, dedupe(layers), dedupe(blockNames), counts));
-  return finish(pages);
+  const res = finish(pages); res.carved = carved; return res;
 }
 
 // ---------------- DGN V7 (ISFF) ----------------

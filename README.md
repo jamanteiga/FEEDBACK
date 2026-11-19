@@ -149,3 +149,27 @@ Resultados de búsqueda: las acciones «abrir original · ver / editar · más c
 - Fotos/imágenes y PDF escaneados (sin capa de texto): al abrir, se localiza el texto con OCR con coordenadas y se rodea con un rectángulo de borde rojo (con un tenue sombreado amarillo). La posición es aproximada; las coordenadas se guardan en la página para no repetir el OCR (la primera vez tarda unos segundos, más en fotos grandes).
 - Planos DWG/DXF/DGN: el visor busca y resalta el texto (ya existía). Word/Excel/PowerPoint/correo: sombreado amarillo en el texto extraído (no se puede dibujar sobre la maquetación original).
 - OCR denso: ahora se añade a la lectura normal en vez de sustituirla, para no empeorar imágenes limpias.
+
+## v0.20 — OCR también en planos DWG / DXF / DGN
+Al indexar un plano se dibuja su geometría a una imagen y se lee con OCR (horizontal y girada ±90°); solo se añaden como página «OCR del dibujo» las palabras que no estaban ya en el texto extraído (texto convertido a líneas/contornos, p. ej.). Aplica a DWG, DXF y DGN V7. DGN V8 no se puede dibujar (se sigue indexando su texto aproximado). El visor de planos ahora también abre DGN V7 (solo geometría; sin resaltado de texto). Conocido: example_2018.dwg (formato AC1032 concreto de prueba) falla al leerse con libredwg («Aborted()»), anterior a este cambio. No lee imágenes incrustadas (OLE/raster) dentro del DWG.
+
+## v0.21
+- **Búsqueda «por significado»** (casilla junto a «agrupar por documento»): amplía la consulta con sinónimos HVAC/naval ES-EN y términos relacionados calculados con tus propios documentos (coocurrencia en la misma página). Sin modelos descargados ni envío de datos; no es una IA neuronal. Se guarda con la búsqueda guardada.
+- **Pestaña «Equipos»**: etiquetas técnicas (100VENT5501, RHE-ACON5067, 03JY8-00…), normas (ISO/EN/UNE…) y ficha por etiqueta con todas sus apariciones y valores cercanos (caudal, presión, temperatura…). Se calcula del texto ya indexado.
+- **Revisión asistida del OCR**: en el detalle de una página con OCR, «Revisar OCR (recorte + texto)» abre una ventana a pantalla completa con la imagen, las palabras dudosas marcadas (<75 %), su recorte y un campo para corregirlas. La corrección se aplica al texto indexado (queda el original y el registro).
+- **Comparación gráfica de planos** (dos DWG/DXF seleccionados → «Comparar versiones»): rojo = solo en A, verde = solo en B, gris = común, y listado de textos añadidos/eliminados.
+- **Informes rápidos** (lista en Informes): pendientes de revisar, novedades 7 días, OCR de baja confianza, con puntos marcados, con comprobaciones pendientes.
+- **Aviso de copia de seguridad** configurable (Datos y copias → «Salud del índice») y **panel de salud del índice** (errores, sin texto, OCR dudoso, duplicados, sin revisar…).
+- **Modo línea de comandos** (`cli/indexar-lote.bat` o `node cli/indexar-lote.mjs <carpeta> <salida.fbp> --clave=… [--originales]`): indexa una carpeta con un Chrome oculto y genera un `.fbp` cifrado que se importa en la app. Requiere Node 18+, Chrome/Edge y `npm i playwright-core`.
+- **Imágenes incrustadas**: además de las de `media/` en docx/xlsx/pptx, se buscan PNG/JPEG por firma dentro de objetos OLE incrustados y de .doc/.xls/.ppt antiguos (aproximado). DWG: se listan las imágenes enlazadas (archivos externos) y se intentan extraer las incrustadas (sin ficheros de prueba reales con OLE).
+- **DWG 2018 (AC1032 de prueba)**: el lector integrado (libredwg) sigue sin poder abrirlo; ahora da un mensaje claro en castellano («guárdalo como DXF o DWG 2013») y un DWG defectuoso ya no impide leer los siguientes.
+- Corregido: el visor/comparador DXF fallaba con grupos de coordenadas repetidos en algunas entidades.
+
+## v0.22
+- **Matriz de requisitos ↔ evidencias**: en el detalle de una página, «Vincular esta página» como evidencia de un requisito con veredicto (cumple / no cumple / dudoso) y nota. La matriz de trazabilidad (y su Excel) muestra las evidencias y el **cumplimiento** calculado: sin evidencia · cumple · dudoso · no cumple (cualquier «no cumple» manda). Resumen de totales bajo la tabla. Las evidencias viajan en el .fbp.
+- **Lista de equipos exportable** (pestaña Equipos → «Exportar lista de equipos (Excel)»): una hoja por etiqueta (documentos, partes, valores cercanos) y otra con todas las apariciones y su contexto.
+- **Inconsistencias entre documentos** (Equipos → «Buscar inconsistencias»): misma etiqueta con valores distintos de la misma magnitud (caudal, presión, temperatura, potencia, velocidad, ruido; unidades normalizadas, tolerancia 2 %) en documentos distintos, solo valores a ≤60 caracteres de la etiqueta. Son propuestas para revisar; «añadir como conflicto» las lleva a requisitos.
+
+## v0.23
+- **Duplicados, casi duplicados y versiones** (Documentos → «Buscar»): compara el texto indexado por fragmentos de 5 palabras y lista parejas con parecido ≥70/85/95 % (el % es sobre el documento más corto, así que una versión con añadidos puede salir al 100 %). También lista familias de versiones por nombre (REV, V, fecha) con enlaces «comparar» que abren la comparación de versiones ya existente. No elimina nada.
+- **Informe de cobertura de requisitos** (Informes → «Calcular» / «Descargar (Excel)»): totales y % de cumple / dudoso / no cumple / sin evidencia, por concepto y por documento de origen, con hoja de detalle. Opción de incluir descartados.

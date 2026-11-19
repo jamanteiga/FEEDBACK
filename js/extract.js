@@ -2,6 +2,7 @@
 // texto/CSV/HTML/RTF y ZIP. Devuelve páginas con una etiqueta de ubicación (hoja, diapositiva, pág. aprox., bloque).
 import { docPages, xlsPages, pptPages } from './legacy.js';
 import { cadPages } from './cad.js';
+import { carveImages } from './carve.js';
 export const OFFICE_EXT = ['docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt'];
 export const CAD_EXT = ['dwg', 'dxf', 'dgn'];
 export const TEXT_EXT = ['txt', 'csv', 'tsv', 'log', 'md', 'html', 'htm', 'rtf'];
@@ -117,11 +118,16 @@ export const FORMAT_NAME = { docx: 'Word', doc: 'Word (.doc antiguo)', xlsx: 'Ex
 
 // Imágenes incrustadas en Word/Excel/PowerPoint (capturas, fotos de planos…): se devuelven como «adjuntos» para que se les pase OCR.
 export function embeddedImages(ext, buf) {
-  if (!['docx', 'xlsx', 'pptx'].includes(ext)) return [];
+  const mk = (list, tag) => list.slice(0, 40).map((f, i) => ({ name: `imagen-incrustada-${String(i + 1).padStart(2, '0')}${tag}-${f.name}`, mime: '', bytes: f.bytes, inline: f.bytes.byteLength < 8192 }));
   try {
-    return zipEntries(buf).filter(f => /(^|\/)(word|ppt|xl)\/media\//i.test(f.path) && /\.(png|jpe?g|tiff?)$/i.test(f.name)).slice(0, 40)
-      .map((f, i) => ({ name: `imagen-incrustada-${String(i + 1).padStart(2, '0')}-${f.name}`, mime: '', bytes: f.bytes, inline: f.bytes.byteLength < 8192 }));
-  } catch { return []; }
+    if (['docx', 'xlsx', 'pptx'].includes(ext)) {
+      const z = zipEntries(buf), media = z.filter(f => /(^|\/)(word|ppt|xl)\/media\//i.test(f.path) && /\.(png|jpe?g|tiff?|bmp|gif|webp)$/i.test(f.name)), ole = [];
+      for (const f of z.filter(f => /(^|\/)(word|ppt|xl)\/embeddings\//i.test(f.path) && /\.(bin|ole)$/i.test(f.name))) carveImages(f.bytes, 5).forEach((c, k) => ole.push({ name: `${f.name}-${k + 1}.${c.ext}`, bytes: c.bytes }));
+      return [...mk(media, ''), ...mk(ole, '-ole')];
+    }
+    if (['doc', 'xls', 'ppt'].includes(ext)) return mk(carveImages(buf, 30).map((c, k) => ({ name: `${k + 1}.${c.ext}`, bytes: c.bytes })), '-bin');   // formatos antiguos: imágenes halladas por firma (aproximado)
+  } catch { /* sin imágenes */ }
+  return [];
 }
 
 // Punto de entrada común (hilo principal o Web Worker): páginas de texto + «adjuntos» (ZIP: sus archivos; Office: imágenes incrustadas para OCR).
@@ -130,5 +136,6 @@ export async function parseDocument(ext, buf) {
     const ents = zipEntries(buf);
     return { pages: [{ pageNo: 1, label: '', text: 'Contenido del ZIP:\n' + ents.map(e => e.path).join('\n') }], atts: ents.map(e => ({ name: e.name, mime: '', bytes: e.bytes, inline: false })) };
   }
-  return { pages: await extractDocument(ext, buf), atts: embeddedImages(ext, buf) };
+  const pages = await extractDocument(ext, buf);
+  return { pages, atts: [...embeddedImages(ext, buf), ...(pages.carved || []).slice(0, 10).map((c, i) => ({ name: `imagen-incrustada-dwg-${i + 1}.${c.ext}`, mime: '', bytes: c.bytes, inline: false }))] };
 }

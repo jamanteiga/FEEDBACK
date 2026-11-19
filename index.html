@@ -12,7 +12,8 @@
 <body>
 <header><h1>FEEDBACK</h1><span>Documentación técnica. Proceso y trazabilidad</span><div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><label class="m" title="Impide cualquier cambio: consulta segura" style="color:inherit"><input type="checkbox" id="ro"> Solo lectura</label><select id="proj" title="Proyecto activo"></select><button id="projnew" class="sec" title="Nuevo proyecto">＋</button><input id="user" placeholder="Usuario / equipo" title="Se anota en el registro de cambios" style="width:140px"><button id="helpbtn" class="sec" title="Atajos de teclado (?)" onclick="document.getElementById('help').showModal()">?</button><button id="theme" class="sec" title="Modo claro/oscuro">🌙</button></div></header>
 <div id="robar" class="msg duplicado" hidden style="margin:0;border-radius:0;text-align:center">🔒 MODO SOLO LECTURA: se puede buscar y consultar, pero no se guarda ningún cambio.</div>
-<nav id="tabs"><button class="tab" data-go="inicio">Inicio</button><button class="tab" data-go="buscar">Buscar</button><button class="tab" data-go="requisitos">Requisitos</button><button class="tab" data-go="informes">Informes</button><button class="tab" data-go="documentos">Documentos</button><button class="tab" data-go="datos">Datos y copias</button><span id="busy" class="m"></span></nav>
+<div id="bkbanner" class="msg error" hidden style="margin:6px 0"></div>
+<nav id="tabs"><button class="tab" data-go="inicio">Inicio</button><button class="tab" data-go="buscar">Buscar</button><button class="tab" data-go="requisitos">Requisitos</button><button class="tab" data-go="informes">Informes</button><button class="tab" data-go="equipos">Equipos</button><button class="tab" data-go="documentos">Documentos</button><button class="tab" data-go="datos">Datos y copias</button><span id="busy" class="m"></span></nav>
 <main>
 
 <section class="card" id="dash" data-tab="inicio"></section>
@@ -56,7 +57,7 @@
   </form>
   <div class="row" style="margin:4px 0"><select id="ss" title="Búsquedas guardadas (indica los documentos nuevos desde la última vez)"><option value="">Búsquedas guardadas…</option></select><button type="button" id="ss-save" class="sec">Guardar esta búsqueda</button><button type="button" id="ss-del" class="sec">Borrar</button>
     <select id="ftype" title="Filtrar por tipo de fichero"><option value="">Tipo de fichero: todos</option><option value="eml">Correo (.eml)</option><option value="msg">Mensaje Outlook (.msg)</option><option value="dwg">DWG</option><option value="dxf">DXF</option><option value="dgn">DGN</option><option value="pdf">PDF</option><option value="doc">Word .doc</option><option value="docx">Word .docx</option><option value="xls">Excel .xls</option><option value="xlsx">Excel .xlsx</option><option value="xlsm">Excel .xlsm</option><option value="img">Foto / imagen (cualquier formato)</option><option value="ppt">PowerPoint .ppt</option><option value="pptx">PowerPoint .pptx</option></select>
-    <select id="sort"><option value="rel">Orden: relevancia</option><option value="fecha-desc">Fecha: más recientes</option><option value="fecha-asc">Fecha: más antiguos</option></select><label class="m"><input type="checkbox" id="grp"> agrupar por documento</label><label class="m" title="Encuentra palabras con letras mal leídas por el OCR (p. ej. «ventiIador»)"><input type="checkbox" id="fz"> tolerar erratas (OCR)</label><label class="m" title="Oculta los documentos que has marcado como sustituidos por una revisión posterior"><input type="checkbox" id="sust"> ocultar sustituidos</label><span id="rescount" class="m"></span></div>
+    <select id="sort"><option value="rel">Orden: relevancia</option><option value="fecha-desc">Fecha: más recientes</option><option value="fecha-asc">Fecha: más antiguos</option></select><label class="m" title="Amplía la búsqueda con sinónimos HVAC/naval ES-EN y términos relacionados de tus propios documentos (sin modelos externos)"><input type="checkbox" id="sem"> por significado</label><label class="m"><input type="checkbox" id="grp"> agrupar por documento</label><label class="m" title="Encuentra palabras con letras mal leídas por el OCR (p. ej. «ventiIador»)"><input type="checkbox" id="fz"> tolerar erratas (OCR)</label><label class="m" title="Oculta los documentos que has marcado como sustituidos por una revisión posterior"><input type="checkbox" id="sust"> ocultar sustituidos</label><span id="rescount" class="m"></span></div>
   <div class="row" style="margin:4px 0"><button type="button" id="export2" class="sec" title="Guarda en un .json todo el índice: documentos, texto extraído/corregido, etiquetas, notas y puntos marcados">💾 Guardar índice completo (.json)</button><span class="m">Contiene textos, etiquetas, notas y marcas (no los archivos originales). Se importa en otro equipo con «Importar índice…».</span></div>
   <div id="results"></div>
 </section>
@@ -76,6 +77,7 @@
     <button id="rep-sel" disabled>Informe de los seleccionados (0)</button>
     <button id="rep-res" class="sec">Informe de los resultados de la búsqueda</button>
     <button id="rep-all" class="sec">Informe de todos</button>
+    <select id="rep-quick" title="Informes recurrentes con un clic"><option value="">Informes rápidos…</option><option value="pend">Pendientes de revisar</option><option value="nov">Novedades de los últimos 7 días</option><option value="ocrd">Con OCR de baja confianza</option><option value="marc">Con puntos marcados ★</option><option value="conf">Con comprobaciones pendientes (⏳)</option></select>
   </div>
   <details style="margin-top:8px"><summary><b>Plantilla del informe</b> <span class="m">(cabecera con logotipo, nº de proyecto y revisión; se recuerda por proyecto)</span></summary>
     <div class="row" style="margin-top:6px"><label class="m">Empresa <input id="rc-co"></label><label class="m">Nº de proyecto <input id="rc-no"></label><label class="m">Revisión <input id="rc-rev" style="width:70px"></label><button type="button" id="rc-revup" class="sec" title="Suma 1 a la revisión (A→B, 0→1…)">Nueva revisión</button><label class="m">Elaborado por <input id="rc-au"></label></div>
@@ -118,6 +120,15 @@
   <iframe id="reportframe" style="width:100%;height:560px;border:1px solid var(--line);border-radius:6px;margin-top:10px;background:#fff"></iframe>
 </section>
 
+<section class="card" id="dupcard" data-tab="documentos"><h2 style="margin-top:0">Duplicados, casi duplicados y versiones</h2>
+<div class="row"><label class="m">Parecido mínimo <select id="dup-min"><option value="0.95">95 %</option><option value="0.85" selected>85 %</option><option value="0.7">70 %</option></select></label><button id="dup-go">Buscar</button><span class="m">Compara el texto indexado de todos los documentos. «comparar» abre la comparación de versiones.</span></div><div id="dup-out"></div></section>
+<section class="card" id="covcard" data-tab="informes"><h2 style="margin-top:0">Informe de cobertura de requisitos</h2>
+<div class="row"><button id="cov-go">Calcular</button><button id="cov-xlsx" class="sec">Descargar (Excel)</button><label class="m"><input type="checkbox" id="cov-desc"> incluir descartados</label><span class="m">Usa las evidencias vinculadas (cumple / no cumple / dudoso). Sin evidencia = sin comprobar.</span></div><div id="cov-out"></div></section>
+<section class="card" id="eqcard" data-tab="equipos"><h2 style="margin-top:0">Equipos, normas y etiquetas técnicas</h2>
+<div class="m">Etiquetas detectadas en el texto indexado (p. ej. 100VENT5501, RHE-ACON5067, 03JY8-00, ISO 7547). «Ficha» muestra dónde aparece cada una y los valores cercanos. Si el OCR confundió caracteres (O/0, I/1), la etiqueta puede salir duplicada: revisa el OCR de esa página.</div>
+<div class="row"><input id="eq-q" placeholder="Filtrar etiqueta…" style="width:220px"><select id="eq-kind"><option value="">Todos los tipos</option><option value="equipo">Equipos / tags</option><option value="local">Locales</option><option value="norma">Normas</option></select><button id="eq-go">Actualizar</button></div>
+<div class="row" style="margin-top:6px"><button id="eq-xlsx" class="sec">Exportar lista de equipos (Excel)</button><button id="eq-inc" class="sec">Buscar inconsistencias entre documentos</button></div>
+<div id="eq-incout"></div><div id="eq-list"></div><div id="eq-ficha"></div></section>
 <section class="card" data-tab="documentos">
   <h2>Documentos y registro</h2>
   <div class="row" style="margin-bottom:4px"><span class="m">Edición en bloque de los marcados:</span><input id="be-tags" placeholder="Añadir etiquetas (coma)" style="width:170px"><select id="be-proj"></select><select id="be-chk"></select><input id="be-note" placeholder="Añadir a la nota" style="width:150px"><button id="be-go" class="sec">Aplicar</button></div>
@@ -137,6 +148,9 @@
   <div id="audit" style="max-height:220px;overflow:auto;margin-top:6px"></div>
 </section>
 
+<section class="card" id="healthcard" data-tab="datos"><h2 style="margin-top:0">Salud del índice</h2>
+<div class="row"><button id="hl-go">Revisar ahora</button><span class="m">Resumen de problemas del índice con enlaces para arreglarlos. No modifica nada por sí mismo.</span></div><div id="hl-out"></div>
+<div class="row" style="margin-top:10px"><label class="m">Avisar si llevo más de <select id="bk-days"><option value="0">(no avisar)</option><option value="1">1 día</option><option value="3">3 días</option><option value="7">7 días</option><option value="30">30 días</option></select> sin copia de seguridad (carpeta de datos o exportación)</label><span class="m" id="bk-last"></span></div></section>
 <section class="card" data-tab="datos">
   <h2>Base de datos y copia en disco</h2>
   <p class="m" style="margin-top:0">El índice vive en el navegador de <b>este equipo</b>. Para que no se pierda de un día para otro (limpieza de datos del sitio, otro perfil o ventana privada), elige una <b>carpeta de datos</b> en este ordenador (p. ej. <code>C:\FEEDBACK\datos</code>): se guarda sola una copia tras cada cambio y se restaura si hace falta. Usa siempre la misma URL y el mismo navegador.</p>

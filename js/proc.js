@@ -105,6 +105,18 @@ export function mergeDense(base, dense) {
   for (const t of dense.split(/\s+/)) { const k = t.toLowerCase(); if (t.length >= 3 && /[A-Za-z0-9]/.test(t) && !seen.has(k) && !/^\[/.test(t)) { seen.add(k); add.push(t); } }
   return add.length ? base.trim() + '\n\n[lecturas adicionales: sombreados y texto vertical]\n' + add.join(' ') : base;
 }
+// OCR de una imagen limpia generada por la app (p. ej. un plano dibujado): sin preproceso, horizontal y girada ±90°
+export async function ocrClean(canvas, onStatus) {
+  const w = await getWorker(onStatus); await w.setParameters({ tessedit_pageseg_mode: '11', preserve_interword_spaces: '1' });
+  const out = [], seen = new Set(); let conf = 0, n = 0;
+  for (const [rot, label] of [[null, 'horizontal'], [true, 'vertical ↑'], [false, 'vertical ↓']]) {
+    onStatus?.(label);
+    const r = await w.recognize(rot === null ? canvas : rot90(canvas, rot), {}, { text: true, tsv: true });
+    for (const x of tsvWords(r.data.tsv)) if (x.conf >= 60 && x.text.length >= 3 && /[A-Za-z0-9]/.test(x.text) && !seen.has(x.text.toLowerCase())) { seen.add(x.text.toLowerCase()); out.push(x.text); conf += x.conf; n++; }
+  }
+  await w.setParameters({ tessedit_pageseg_mode: '3' });
+  return { text: out.join(' '), conf: n ? conf / n : 0 };
+}
 export async function ocrDense(canvas, onStatus) {
   const w = await getWorker(onStatus);
   onStatus?.('OCR denso: preparando imagen…');

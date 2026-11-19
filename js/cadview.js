@@ -96,14 +96,61 @@ function sceneDxf(txt) {
     }
     if (pend && c === 2) { section = v.trim(); pend = false; continue; }
     if (!cur) continue;
-    if (c === 10 || c === 20) (cur.g[c] ||= []).push(v);   // polilíneas: varios vértices
-    else if (c === 3) (cur.g[3] ||= []).push(v);
+    if (c === 10 || c === 20) { if (!Array.isArray(cur.g[c])) cur.g[c] = cur.g[c] === undefined ? [] : [cur.g[c]]; cur.g[c].push(v); }   // polilíneas: varios vértices
+    else if (c === 3) { if (!Array.isArray(cur.g[3])) cur.g[3] = cur.g[3] === undefined ? [] : [cur.g[3]]; cur.g[3].push(v); }
     else if (cur.g[c] === undefined || c === 1) cur.g[c] = v;
     if ((c === 10 || c === 20) && cur.t !== 'LWPOLYLINE') cur.g[c] = cur.g[c][0];   // resto de entidades: valor único
   }
   flush(); return build(model, blocks);
 }
 
+
+// ---- DGN V7 (solo geometría: líneas, cadenas de líneas y formas; el texto ya se extrae aparte) ----
+function sceneDgn7(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), n = u8.length, model = [];
+  const i32 = p => (dv.getInt16(p, true) << 16) | dv.getUint16(p + 2, true);
+  let pos = 0, is3d = false, first = true;
+  while (pos + 4 <= n) {
+    const w0 = dv.getUint16(pos, true); if (w0 === 0xFFFF) break;
+    const type = (w0 >> 8) & 0x7f, words = dv.getUint16(pos + 2, true), size = (words + 2) * 2;
+    if (size < 4 || pos + size > n) break;
+    if (first && type === 9 && size > 1215) is3d = !!(u8[pos + 1214] & 0x40);
+    if (type !== 9 && type !== 8) first = false;
+    if (!(w0 & 0x8000)) {
+      const st = is3d ? 12 : 8;
+      if (type === 3 && size >= 36 + 2 * st) model.push({ t: 'L', x1: i32(pos + 36), y1: i32(pos + 40), x2: i32(pos + 36 + st), y2: i32(pos + 40 + st) });
+      else if ((type === 4 || type === 6) && size >= 38) {
+        const nv = Math.min(dv.getUint16(pos + 36, true), Math.floor((size - 38) / st)), pts = [];
+        for (let k = 0; k < nv; k++) pts.push(i32(pos + 38 + k * st), i32(pos + 42 + k * st));
+        if (pts.length >= 4) model.push({ t: 'P', pts, closed: type === 6 });
+      }
+    }
+    pos += size;
+  }
+  return build(model, new Map());
+}
+export async function cadScene(ext, u8) {
+  if (ext === 'dgn') { if (u8[0] === 0xD0 && u8[1] === 0xCF) throw new Error('DGN V8: no se puede dibujar (solo DGN V7)'); return sceneDgn7(u8); }
+  const head = new TextDecoder().decode(u8.subarray(0, 20));
+  return ext === 'dxf' && !head.startsWith('AutoCAD Binary') ? sceneDxf(new TextDecoder('utf-8').decode(u8)) : sceneDwg(u8, ext === 'dxf' ? 'DXF' : 'DWG');
+}
+// dibuja solo la geometría en un canvas blanco (para OCR de texto dibujado con líneas)
+export function renderStrokes(scene, maxSide = 5000) {
+  const [x0, y0, x1, y1] = scene.bounds, W0 = Math.max(1e-9, x1 - x0), H0 = Math.max(1e-9, y1 - y0), s = maxSide / Math.max(W0, H0) * 0.98;
+  const c = document.createElement('canvas'); c.width = Math.max(16, Math.ceil(W0 * s) + 20); c.height = Math.max(16, Math.ceil(H0 * s) + 20);
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.strokeStyle = '#000'; g.lineWidth = 1.6; g.lineJoin = 'round'; g.beginPath();
+  for (const st of scene.strokes) { g.moveTo((st[0] - x0) * s + 10, (y1 - st[1]) * s + 10); for (let i = 2; i < st.length; i += 2) g.lineTo((st[i] - x0) * s + 10, (y1 - st[i + 1]) * s + 10); }
+  g.stroke();
+  // texto convertido a contornos (fuentes TrueType explotadas): los contornos cerrados pequeños se rellenan para que se lean como letras
+  const lim = Math.max(W0, H0) * 0.03; g.fillStyle = '#000'; g.beginPath();
+  for (const st of scene.strokes) {
+    const n = st.length; if (n < 8 || Math.abs(st[0] - st[n - 2]) > 1e-6 || Math.abs(st[1] - st[n - 1]) > 1e-6) continue;
+    let a = Infinity, b = Infinity, c2 = -Infinity, d = -Infinity; for (let i = 0; i < n; i += 2) { a = Math.min(a, st[i]); c2 = Math.max(c2, st[i]); b = Math.min(b, st[i + 1]); d = Math.max(d, st[i + 1]); }
+    if (c2 - a > lim || d - b > lim) continue;
+    g.moveTo((st[0] - x0) * s + 10, (y1 - st[1]) * s + 10); for (let i = 2; i < n; i += 2) g.lineTo((st[i] - x0) * s + 10, (y1 - st[i + 1]) * s + 10); g.closePath();
+  }
+  g.fill('evenodd'); return c;
+}
 export async function openCadViewer({ blob, name, ext, terms = [] }) {
   document.getElementById('viewer')?.remove();
   const wrap = document.createElement('div'); wrap.id = 'viewer';
@@ -159,10 +206,23 @@ export async function openCadViewer({ blob, name, ext, terms = [] }) {
     else if (a === 'dl') { const l = document.createElement('a'); l.href = URL.createObjectURL(blob); l.download = name; l.click(); } });
   try {
     const u8 = new Uint8Array(await blob.arrayBuffer());
-    if (ext === 'dgn') throw new Error('La vista de planos no está disponible para DGN; se indexa su texto, pero el dibujo solo puede abrirse con MicroStation o similar.');
-    const head = new TextDecoder().decode(u8.subarray(0, 20));
-    scene = ext === 'dxf' && !head.startsWith('AutoCAD Binary') ? sceneDxf(new TextDecoder('utf-8').decode(u8)) : await sceneDwg(u8, ext === 'dxf' ? 'DXF' : 'DWG');
+    if (ext === 'dgn' && u8[0] === 0xD0 && u8[1] === 0xCF) throw new Error('La vista de planos no está disponible para DGN V8 (se indexa su texto, pero el dibujo solo puede abrirse con MicroStation o similar).');
+    scene = await cadScene(ext, u8);
     msg.textContent = `${scene.strokes.length} trazos · ${scene.texts.length} textos${scene.truncated ? ' · plano muy grande: dibujo parcial' : ''} · rueda = zoom, arrastrar = mover`;
     q.value = terms.join(' '); fit(); if (terms.length) find(false);
   } catch (e) { msg.textContent = 'No se pudo mostrar el plano: ' + (e.message || e); msg.style.color = '#b00'; }
+}
+
+// ---- comparación gráfica de dos planos: lo que solo está en A (rojo), solo en B (verde) y lo común (gris) ----
+export function diffScenes(A, B, maxSide = 1600) {
+  const x0 = Math.min(A.bounds[0], B.bounds[0]), y0 = Math.min(A.bounds[1], B.bounds[1]), x1 = Math.max(A.bounds[2], B.bounds[2]), y1 = Math.max(A.bounds[3], B.bounds[3]);
+  const q = Math.max(x1 - x0, y1 - y0) / 4000 || 1, sig = st => { const o = []; for (let i = 0; i < st.length; i += 2) o.push(Math.round(st[i] / q), Math.round(st[i + 1] / q)); const f = o.join(','), r = []; for (let i = o.length - 2; i >= 0; i -= 2) r.push(o[i], o[i + 1]); const b = r.join(','); return f < b ? f : b; };
+  const sa = new Map(A.strokes.map(s => [sig(s), s])), sb = new Map(B.strokes.map(s => [sig(s), s])), onlyA = [], onlyB = [], both = [];
+  for (const [k, s] of sa) (sb.has(k) ? both : onlyA).push(s); for (const [k, s] of sb) if (!sa.has(k)) onlyB.push(s);
+  const W0 = Math.max(1e-9, x1 - x0), H0 = Math.max(1e-9, y1 - y0), sc = maxSide / Math.max(W0, H0), c = document.createElement('canvas'); c.width = Math.ceil(W0 * sc) + 20; c.height = Math.ceil(H0 * sc) + 20;
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+  const paint = (list, col, w) => { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); for (const st of list) { g.moveTo((st[0] - x0) * sc + 10, (y1 - st[1]) * sc + 10); for (let i = 2; i < st.length; i += 2) g.lineTo((st[i] - x0) * sc + 10, (y1 - st[i + 1]) * sc + 10); } g.stroke(); };
+  paint(both, '#b0b6bf', 1); paint(onlyA, '#d32f2f', 1.8); paint(onlyB, '#2e7d32', 1.8);
+  const ta = new Set(A.texts.map(t => t.s)), tb = new Set(B.texts.map(t => t.s));
+  return { canvas: c, onlyA: onlyA.length, onlyB: onlyB.length, both: both.length, textsRemoved: [...ta].filter(t => !tb.has(t)), textsAdded: [...tb].filter(t => !ta.has(t)) };
 }

@@ -87,7 +87,7 @@ export const Store = {
       for (const id of dirty) await this.writeBlob(id);
       await writeFile(this.dir, DATA, window.pako.gzip(JSON.stringify(await this.snapshot())));
       if (this.migrate) { for (const n of ['docs', 'blobs', 'pimg']) { try { await this.dir.removeEntry(n, { recursive: true }); } catch { /* no existe */ } } for (const x of ['manifest.json', 'marks.json', 'log.json', 'roots.json', 'extras.json']) await removeFile(this.dir, x); this.migrate = false; }
-      this.lastSave = new Date(); this.status(); this.maybeVersion().catch(() => {}); return true;
+      this.lastSave = new Date(); try { localStorage.setItem('fb-lastcopy', String(Date.now())); } catch { /* sin almacenamiento */ } this.status(); this.maybeVersion().catch(() => {}); return true;
     } catch (e) {
       dirty.forEach(i => this.dirty.add(i)); deleted.forEach(i => this.deleted.add(i));
       for (const k of Object.keys(f)) if (f[k]) this.flags[k] = true;
