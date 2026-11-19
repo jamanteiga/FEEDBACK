@@ -7,7 +7,7 @@ const PLAIN = { docs: ['id'], pages: ['docId', 'pageNo'], marks: ['id', 'docId']
 async function pack(s, v, k, K = Vault) {
   if (!K.enc || v == null) return v;
   if (s === 'blobs' || s === 'pimg') return { _enc: await Vault.seal(new Uint8Array(await v.arrayBuffer()), K), _t: v.type || '' };
-  if (s === 'meta') return k === 'extras' ? { _enc: await Vault.seal(te.encode(JSON.stringify(v)), K) } : v;
+  if (s === 'meta') return (k === 'extras' || k === 'searchindex') ? { _enc: await Vault.seal(te.encode(JSON.stringify(v)), K) } : v;
   const o = { _enc: await Vault.seal(te.encode(JSON.stringify(v)), K) };
   for (const f of PLAIN[s] || []) if (v[f] !== undefined) o[f] = v[f];
   if (s === 'docs') { if (v.sha256 != null) o.sha256 = await Vault.hash(v.sha256, K); if (v.key != null) o.key = await Vault.hash(v.key, K); }
@@ -44,12 +44,16 @@ export const DB = {
       r.onerror = () => rej(r.error);
     });
   },
+  readonly: false, _dirty: false,
+  guard() { if (this.readonly) throw new Error('Modo solo lectura activo: no se pueden guardar cambios. Desactívalo en la cabecera («Solo lectura»).'); },
   onChange: null,   // gancho para la copia en disco
   async get(s, k) { return unpack(s, await req(store(s).get(k))); },
-  async put(s, v, k) { const w = await pack(s, v, k); const r = await req(store(s, 'readwrite').put(w, k)); DB.onChange?.('put', s, v, k, r); return r; },
-  async del(s, k) { await req(store(s, 'readwrite').delete(k)); DB.onChange?.('del', s, null, k); },
+  async dirty(s) { if (s === 'pages' && !this._dirty) { this._dirty = true; try { await req(store('meta', 'readwrite').put({ dirty: true }, 'idxstate')); } catch { /* sin acceso */ } } },
+  async count(s) { return req(store(s).count()); },
+  async put(s, v, k) { await this.dirty(s); if (this.readonly && !(s === 'meta' && k === 'lock')) this.guard(); const w = await pack(s, v, k); const r = await req(store(s, 'readwrite').put(w, k)); DB.onChange?.('put', s, v, k, r); return r; },
+  async del(s, k) { this.guard(); await this.dirty(s); await req(store(s, 'readwrite').delete(k)); DB.onChange?.('del', s, null, k); },
   async all(s) { return Promise.all((await req(store(s).getAll())).map(r => unpack(s, r))); },
-  async clear(s) { await req(store(s, 'readwrite').clear()); DB.onChange?.('clear', s); },
+  async clear(s) { this.guard(); await this.dirty(s); await req(store(s, 'readwrite').clear()); DB.onChange?.('clear', s); },
   async byIndex(s, idx, val) {
     if (Vault.on && s === 'docs' && (idx === 'sha' || idx === 'key')) val = await Vault.hash(val);
     return Promise.all((await req(store(s).index(idx).getAll(IDBKeyRange.only(val)))).map(r => unpack(s, r)));
@@ -57,7 +61,7 @@ export const DB = {
   // Cambia el cifrado de todos los registros: oldK/newK = claves (o null = en claro). No dispara la copia en disco.
   async recrypt(oldK, newK, onProgress) {
     for (const s of ['docs', 'pages', 'blobs', 'pimg', 'marks', 'log', 'meta']) {
-      const keys = s === 'meta' ? ['extras'] : await req(store(s).getAllKeys());
+      const keys = s === 'meta' ? ['extras', 'searchindex'] : await req(store(s).getAllKeys());
       let n = 0;
       for (const k of keys) {
         const raw = await req(store(s).get(k)); if (raw === undefined) continue;

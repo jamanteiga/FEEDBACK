@@ -104,7 +104,7 @@ En el detalle de un documento («ver / editar»): título, etiquetas, nota, dato
 - **Seguridad del repositorio**: `.gitignore` bloquea además `*.fbd`, `*.fbv`, `*.fbk`, `docs/`, `blobs/`, `pimg/`, `originales/`, `versions/` y los formatos de correo/Office. Si elegiste esta carpeta como carpeta de datos, esos archivos no se suben.
 
 ## Novedades v0.14
-- **Formatos nuevos (lectura directa, sin conversión)**: Word `.doc` y `.docx`, Excel `.xls` y `.xlsx`, y planos CAD `.dwg` (R14 a 2018), `.dxf` y `.dgn` (V7 fiable; V8 aproximado). De los planos se indexan textos, cajetín/atributos, capas, bloques y espacios modelo/papel. Siguen sin leerse los `.ppt` antiguos (guárdalos como `.pptx`).
+- **Formatos nuevos (lectura directa, sin conversión)**: Word `.doc` y `.docx`, Excel `.xls` y `.xlsx`, y planos CAD `.dwg` (R14 a 2018), `.dxf` y `.dgn` (V7 fiable; V8 aproximado). De los planos se indexan textos, cajetín/atributos, capas, bloques y espacios modelo/papel. 
 - **Procesado en segundo plano** (Web Worker): Word, Excel, planos y correos se analizan sin congelar la pantalla; si el navegador no lo permite, se procesa en la ventana como antes.
 - **Búsqueda**: por valores y unidades (`caudal > 5000 m3/h`, `presión 200-300 Pa`, con equivalencias de unidades), tolerancia a erratas de OCR, frase exacta entre comillas y «más como este».
 - **Control documental**: matriz de trazabilidad (requisito → documentos y páginas → estado, exportable a .xlsx), lista de comprobación por documento, detección de revisiones sustituidas con comparación, y papelera de 30 días.
@@ -113,3 +113,33 @@ En el detalle de un documento («ver / editar»): título, etiquetas, nota, dato
 - **Uso**: arrastrar una carpeta entera con barra de progreso y cancelación, vista previa de `.msg`/`.eml` con adjuntos y conversación, y atajos de teclado (`?` muestra la ayuda).
 - **Licencias**: `vendor/libredwg/` (lectura de DWG) es GPL-3.0; ver `vendor/libredwg/PACKAGE.txt`. SheetJS (Apache-2.0). Pesa unos 8 MB (wasm); solo se carga al abrir un `.dwg`.
 
+## Novedades v0.15
+- **Bandeja de revisión y novedades** (Inicio): documentos nuevos desde tu última visita, sin revisar, pendientes de respuesta, requisitos pendientes y errores. «Revisar siguiente» abre el siguiente sin revisar; dentro del detalle, la tecla **R** lo marca como revisado y pasa al siguiente. Aviso al entrar documentos nuevos (escaneo automático) y cuando una búsqueda guardada tiene resultados nuevos.
+- **Edición en bloque** (Documentos): etiquetas, proyecto, nota y casillas de control para todos los documentos marcados.
+- **Plantillas de informe** (Informes → Plantilla del informe): guarda y aplica empresa, nº, revisión, autor, logotipo, marca de agua y clasificación por cliente o proyecto.
+- **Visor de planos DWG/DXF**: «original» abre el dibujo (líneas, polilíneas, arcos, círculos, elipses, textos y bloques) con zoom, desplazamiento y resaltado de los textos buscados. Es una vista de consulta, no sustituye a un CAD; no dibuja sombreados, splines ni sólidos 3D. DGN: solo texto.
+- **Conflictos probables** (Requisitos → Revisión de valores): marca «Solo conflictos probables» para ver la misma frase con valores distintos en documentos distintos. Solo avisa; decide el ingeniero.
+- **Vínculos entre documentos** (detalle → «Vínculos») y **mapa de relaciones** (Documentos): responde a, sustituye a, complementa, hace referencia, contradice; las sustituciones y adjuntos aparecen solos.
+- **Originales movidos**: en «Comprobar integridad», «buscar en la carpeta» localiza el archivo por su contenido (SHA-256) aunque se haya renombrado o movido y actualiza la ruta.
+- **Registro de cambios** también en Excel.
+- **Proyecto cifrado (.fbp)** (Datos y copias): exporta el proyecto activo (índice, marcas, requisitos y, si quieres, los originales importados) cifrado con contraseña, e impórtalo en otro equipo con «Importar índice…».
+- **Índice de búsqueda persistente**: el arranque no vuelve a leer todas las páginas si nada ha cambiado.
+- **PowerPoint antiguo (.ppt)**: lectura directa de diapositivas, tablas y notas del orador.
+- **Modo solo lectura** (casilla en la cabecera) y **cabecera** y **mensajes de error en castellano**.
+- **Límite conocido**: el DGN V8 sigue siendo una extracción aproximada de cadenas (el formato no está publicado); para planos MicroStation V8 se recomienda guardar también como DWG.
+
+
+## v0.16 — OCR denso
+Para planos con texto apelotonado, tamaños mezclados, líneas cruzando el texto y texto vertical (o fotos de pantalla):
+normalización de iluminación (quita moiré/brillos), color→blanco, ampliación ×3, binarizado, eliminación de líneas largas
+y lectura horizontal + vertical (±90°). Se aplica automáticamente en imágenes cuando la primera lectura es floja y en PDF escaneados
+con confianza <70. El paso queda registrado como `ocr_denso`. En la foto de prueba: de ~5/81 a 26/81 etiquetas exactas (+21 casi exactas). Incluye una segunda binarización por canal máximo para texto sobre sombreados de color (rojo, verde-gris).
+Límite: foto de monitor con moiré fuerte; para mejores resultados, exportar el plano a PDF/imagen directamente.
+
+## v0.17 — Filtro por tipo de fichero y previsualización a pantalla completa
+- Buscador: nueva lista «Tipo de fichero» (todos, .eml, .msg, DWG, DXF, DGN, PDF, .doc, .docx, .xls, .xlsx, .xlsm, foto/imagen de cualquier formato, .ppt, .pptx), independiente de «Todos los tipos» y combinable con el resto de filtros. Se guarda con la búsqueda guardada.
+- «Abrir original» abre siempre una ventana que ocupa toda la pantalla (pantalla completa del navegador cuando es posible) con la ✕ roja arriba a la derecha (también Esc). PDF y planos CAD usan su visor; imágenes se muestran junto a su texto OCR; correos, Word, Excel y PowerPoint se muestran como texto extraído por hoja/diapositiva/parte, con el texto buscado resaltado (▲/▼ o F3/Enter para saltar entre coincidencias).
+- Límite: Word/Excel/PowerPoint/correo no se dibujan con su maquetación original (el botón «Descargar original» abre el archivo con su programa). En imágenes el resaltado está en el texto OCR, no sobre la foto.
+
+## v0.18
+Resultados de búsqueda: las acciones «abrir original · ver / editar · más como este · eliminar» pasan a la línea del título, a la derecha de la etiqueta (p. ej. «General»).

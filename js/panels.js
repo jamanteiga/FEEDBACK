@@ -107,12 +107,15 @@ export function initPanels(c) {
       }
       if (rvRows.length >= 600) break;
     }
-    const groups = new Map(); rvRows.forEach((r, i) => { const k = r.cat + (r.unit ? ' · ' + r.unit : ''); (groups.get(k) || groups.set(k, []).get(k)).push(i); });
+    const auto = $('#rv-auto')?.checked, ckey = r => normTerm(r.ctx.replace(/[\d.,]+\s*[a-zA-Z³²°/%µΩ]*/g, ' ')).split(/[^a-zñ]+/).filter(w => w.length > 3).slice(0, 7).join(' ');
+    const groups = new Map(); rvRows.forEach((r, i) => { const k = r.cat + (r.unit ? ' · ' + r.unit : '') + (auto ? ' · «' + ckey(r) + '»' : ''); (groups.get(k) || groups.set(k, []).get(k)).push(i); });
+    if (auto) for (const [k, idx] of [...groups]) { const vals = new Set(idx.map(i => rvRows[i].nums.join('-') || rvRows[i].value)), docs = new Set(idx.map(i => rvRows[i].docId)); if (vals.size < 2 || docs.size < 2) groups.delete(k); }
     $('#rv').innerHTML = rvRows.length ? [...groups].map(([k, idx]) => {
       const vals = new Set(idx.map(i => rvRows[i].nums.join('-') || rvRows[i].value)), docs = new Set(idx.map(i => rvRows[i].docId)), diff = vals.size > 1 && docs.size > 1;
       return `<details ${idx.length < 25 || diff ? 'open' : ''} style="margin-top:8px"><summary><b>${esc(k)}</b> — ${idx.length} valor(es) en ${docs.size} documento(s) ${diff ? `<span class="tag warn">${vals.size} valores distintos: revisar</span>` : ''}</summary>
       <table><tr><th></th><th>Valor</th><th>Texto literal</th><th>Documento</th><th>Fecha</th></tr>${idx.map(i => { const r = rvRows[i]; return `<tr><td><input type="checkbox" data-rv="${i}"></td><td><b>${esc(r.value)}</b></td><td>${esc(r.ctx)}</td><td><a href="#" data-detail="${r.docId}" data-page="${r.pageNo}">${esc(r.doc)}</a> <span class="m">${esc(String(r.page))}</span></td><td>${esc(r.date)}</td></tr>`; }).join('')}</table></details>`;
     }).join('') + `<div class="m" style="margin-top:6px">${rvRows.length >= 600 ? 'Se muestran los primeros 600. ' : ''}«Valores distintos» solo indica que el mismo tipo de magnitud aparece con cifras diferentes en documentos distintos; puede no referirse al mismo local o sistema. Acota con el filtro de texto. No se decide cuál prevalece.</div>` : '<div class="empty">Sin valores con ese filtro.</div>';
+    if (auto && !groups.size) $('#rv').innerHTML = '<div class="msg ok">Sin conflictos probables con estos filtros.</div>';
   }
   async function rvToReq(status) {
     const sel = [...document.querySelectorAll('[data-rv]:checked')].map(x => rvRows[+x.dataset.rv]); if (!sel.length) return addMsg('error', 'Marca antes las filas de la tabla.');
@@ -126,10 +129,11 @@ export function initPanels(c) {
   $('#syn-save').onclick = async () => { Extras.d.syn = $('#syn').value.split('\n').map(x => x.trim()).filter(Boolean); await Extras.save(); await Extras.log('Sinónimos actualizados'); await runSearch(); addMsg('ok', 'Sinónimos guardados: se aplican a las búsquedas.'); };
 
   // ---------- búsquedas guardadas ----------
+  const alerted = {};
   async function updateBadges() {
     const sel = $('#ss'), cur = sel.value; const list = Extras.d.searches.filter(s => !s.project || !getProject() || s.project === getProject());
     const opts = [];
-    for (const s of list) { const ids = await runSearch(s.spec, false); const n = ids.filter(i => !(s.seen || []).includes(i)).length; opts.push(`<option value="${s.id}">${esc(s.name)}${n ? ` (+${n} nuevos)` : ''}</option>`); }
+    for (const s of list) { const ids = await runSearch(s.spec, false); const n = ids.filter(i => !(s.seen || []).includes(i)).length; if (n && alerted[s.id] !== n) { alerted[s.id] = n; addMsg('duplicado', `Búsqueda guardada «${esc(s.name)}»: ${n} documento(s) nuevo(s) que la cumplen.`); } opts.push(`<option value="${s.id}">${esc(s.name)}${n ? ` (+${n} nuevos)` : ''}</option>`); }
     sel.innerHTML = '<option value="">Búsquedas guardadas…</option>' + opts.join(''); sel.value = cur;
   }
   $('#ss-save').onclick = async () => {

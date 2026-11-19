@@ -10,11 +10,13 @@
 <link rel="icon" href="icon-192.png">
 </head>
 <body>
-<header><h1>FEEDBACK</h1><span>Documentación técnica. Proceso y trazabilidad</span><div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><select id="proj" title="Proyecto activo"></select><button id="projnew" class="sec" title="Nuevo proyecto">＋</button><input id="user" placeholder="Usuario / equipo" title="Se anota en el registro de cambios" style="width:140px"><button id="helpbtn" class="sec" title="Atajos de teclado (?)" onclick="document.getElementById('help').showModal()">?</button><button id="theme" class="sec" title="Modo claro/oscuro">🌙</button></div></header>
+<header><h1>FEEDBACK</h1><span>Documentación técnica. Proceso y trazabilidad</span><div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><label class="m" title="Impide cualquier cambio: consulta segura" style="color:inherit"><input type="checkbox" id="ro"> Solo lectura</label><select id="proj" title="Proyecto activo"></select><button id="projnew" class="sec" title="Nuevo proyecto">＋</button><input id="user" placeholder="Usuario / equipo" title="Se anota en el registro de cambios" style="width:140px"><button id="helpbtn" class="sec" title="Atajos de teclado (?)" onclick="document.getElementById('help').showModal()">?</button><button id="theme" class="sec" title="Modo claro/oscuro">🌙</button></div></header>
+<div id="robar" class="msg duplicado" hidden style="margin:0;border-radius:0;text-align:center">🔒 MODO SOLO LECTURA: se puede buscar y consultar, pero no se guarda ningún cambio.</div>
 <nav id="tabs"><button class="tab" data-go="inicio">Inicio</button><button class="tab" data-go="buscar">Buscar</button><button class="tab" data-go="requisitos">Requisitos</button><button class="tab" data-go="informes">Informes</button><button class="tab" data-go="documentos">Documentos</button><button class="tab" data-go="datos">Datos y copias</button><span id="busy" class="m"></span></nav>
 <main>
 
 <section class="card" id="dash" data-tab="inicio"></section>
+<section class="card" id="inbox" data-tab="inicio"></section>
 
 <section class="card" data-tab="inicio">
   <h2>1 · Carpetas de documentos y correos</h2>
@@ -39,7 +41,7 @@
   <div class="row" style="margin-top:6px"><button id="pickdir" type="button" class="sec">Importar una carpeta entera…</button><span class="m">Copia los archivos admitidos (con subcarpetas) al navegador; para seguir una carpeta del disco sin copiarla usa «Añadir carpeta…».</span></div>
   <div id="prog" class="row" hidden style="margin-top:6px"><progress id="progbar" max="1" value="0" style="flex:1;min-width:200px"></progress><span id="progtxt" class="m"></span><button id="prog-cancel" type="button" class="sec">Cancelar</button></div>
   <input id="dirfile" type="file" webkitdirectory multiple hidden>
-  <input id="file" type="file" multiple hidden accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.msg,.eml,.doc,.docx,.xls,.xlsx,.pptx,.dwg,.dxf,.dgn,.txt,.csv,.html,.htm,.rtf,.zip">
+  <input id="file" type="file" multiple hidden accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.msg,.eml,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.dwg,.dxf,.dgn,.txt,.csv,.html,.htm,.rtf,.zip">
   <div id="upmsgs"></div>
 </section>
 
@@ -53,6 +55,7 @@
     <button>Buscar</button>
   </form>
   <div class="row" style="margin:4px 0"><select id="ss" title="Búsquedas guardadas (indica los documentos nuevos desde la última vez)"><option value="">Búsquedas guardadas…</option></select><button type="button" id="ss-save" class="sec">Guardar esta búsqueda</button><button type="button" id="ss-del" class="sec">Borrar</button>
+    <select id="ftype" title="Filtrar por tipo de fichero"><option value="">Tipo de fichero: todos</option><option value="eml">Correo (.eml)</option><option value="msg">Mensaje Outlook (.msg)</option><option value="dwg">DWG</option><option value="dxf">DXF</option><option value="dgn">DGN</option><option value="pdf">PDF</option><option value="doc">Word .doc</option><option value="docx">Word .docx</option><option value="xls">Excel .xls</option><option value="xlsx">Excel .xlsx</option><option value="xlsm">Excel .xlsm</option><option value="img">Foto / imagen (cualquier formato)</option><option value="ppt">PowerPoint .ppt</option><option value="pptx">PowerPoint .pptx</option></select>
     <select id="sort"><option value="rel">Orden: relevancia</option><option value="fecha-desc">Fecha: más recientes</option><option value="fecha-asc">Fecha: más antiguos</option></select><label class="m"><input type="checkbox" id="grp"> agrupar por documento</label><label class="m" title="Encuentra palabras con letras mal leídas por el OCR (p. ej. «ventiIador»)"><input type="checkbox" id="fz"> tolerar erratas (OCR)</label><label class="m" title="Oculta los documentos que has marcado como sustituidos por una revisión posterior"><input type="checkbox" id="sust"> ocultar sustituidos</label><span id="rescount" class="m"></span></div>
   <div class="row" style="margin:4px 0"><button type="button" id="export2" class="sec" title="Guarda en un .json todo el índice: documentos, texto extraído/corregido, etiquetas, notas y puntos marcados">💾 Guardar índice completo (.json)</button><span class="m">Contiene textos, etiquetas, notas y marcas (no los archivos originales). Se importa en otro equipo con «Importar índice…».</span></div>
   <div id="results"></div>
@@ -76,7 +79,7 @@
   </div>
   <details style="margin-top:8px"><summary><b>Plantilla del informe</b> <span class="m">(cabecera con logotipo, nº de proyecto y revisión; se recuerda por proyecto)</span></summary>
     <div class="row" style="margin-top:6px"><label class="m">Empresa <input id="rc-co"></label><label class="m">Nº de proyecto <input id="rc-no"></label><label class="m">Revisión <input id="rc-rev" style="width:70px"></label><button type="button" id="rc-revup" class="sec" title="Suma 1 a la revisión (A→B, 0→1…)">Nueva revisión</button><label class="m">Elaborado por <input id="rc-au"></label></div>
-    <div class="row" style="margin-top:6px"><label class="m">Marca de agua <input id="rc-wm" list="wm-list" placeholder="(ninguna)" style="width:190px"></label><datalist id="wm-list"><option value="BORRADOR"><option value="PARA REVISIÓN"><option value="COPIA NO CONTROLADA"><option value="CONFIDENCIAL"></datalist><label class="m">Clasificación / marcado <input id="rc-cl" placeholder="p. ej. DIFUSIÓN LIMITADA" style="width:220px"></label><span class="m">La marca de agua va en diagonal en cada página; la clasificación, arriba y abajo de cada página. Todos los informes numeran sus páginas.</span></div>
+    <div class="row" style="margin-top:6px"><label class="m">Marca de agua <input id="rc-wm" list="wm-list" placeholder="(ninguna)" style="width:190px"></label><datalist id="wm-list"><option value="BORRADOR"><option value="PARA REVISIÓN"><option value="COPIA NO CONTROLADA"><option value="CONFIDENCIAL"></datalist><label class="m">Clasificación / marcado <input id="rc-cl" placeholder="p. ej. DIFUSIÓN LIMITADA" style="width:220px"></label><label class="m">Plantilla <select id="tpl" title="Plantillas por cliente o proyecto: empresa, nº, revisión, autor, logotipo, marca de agua y clasificación"></select></label><button type="button" id="tpl-save" class="sec">Guardar como plantilla…</button><button type="button" id="tpl-del" class="sec">Borrar plantilla</button><span class="m">La marca de agua va en diagonal en cada página; la clasificación, arriba y abajo de cada página. Todos los informes numeran sus páginas.</span></div>
     <div class="row" style="margin-top:6px"><label class="m">Logotipo <input id="rc-logo" type="file" accept="image/*"></label><button type="button" id="rc-logoclear" class="sec">Quitar logotipo</button><span id="rc-logoprev"></span></div>
   </details>
 </section>
@@ -90,7 +93,7 @@
 
 <section class="card" id="rvcard" data-tab="requisitos">
   <h2>6 · Revisión de valores y posibles discrepancias</h2>
-  <div class="row"><select id="rv-cat"></select><input type="search" id="rv-txt" placeholder="Texto del contexto (p. ej. «cocina», «sala de máquinas»)" style="min-width:240px"><input type="search" id="rv-range" placeholder="Rango: 8-12 m/s · >=250 Pa · <45 dB" style="min-width:220px"><button id="rv-go">Revisar</button></div>
+  <div class="row"><select id="rv-cat"></select><input type="search" id="rv-txt" placeholder="Texto del contexto (p. ej. «cocina», «sala de máquinas»)" style="min-width:240px"><input type="search" id="rv-range" placeholder="Rango: 8-12 m/s · >=250 Pa · <45 dB" style="min-width:220px"><label class="m"><input type="checkbox" id="rv-auto"> Solo conflictos probables (misma frase, distinto valor en documentos distintos)</label><button id="rv-go">Revisar</button></div>
   <div class="row" style="margin-top:6px"><button id="rv-req" class="sec">Añadir marcados como requisitos</button><button id="rv-conf" class="sec">Añadir marcados como «conflicto»</button></div>
   <div id="rv"></div>
   <details style="margin-top:10px"><summary><b>Sinónimos de búsqueda</b> <span class="m">(una línea por grupo, separados por comas)</span></summary><textarea id="syn" style="width:100%;min-height:90px"></textarea><div class="row"><button id="syn-save" class="sec">Guardar sinónimos</button></div></details>
@@ -117,9 +120,11 @@
 
 <section class="card" data-tab="documentos">
   <h2>Documentos y registro</h2>
+  <div class="row" style="margin-bottom:4px"><span class="m">Edición en bloque de los marcados:</span><input id="be-tags" placeholder="Añadir etiquetas (coma)" style="width:170px"><select id="be-proj"></select><select id="be-chk"></select><input id="be-note" placeholder="Añadir a la nota" style="width:150px"><button id="be-go" class="sec">Aplicar</button></div>
   <div class="row" style="margin-bottom:4px"><button id="bulk-del" class="sec" disabled>Eliminar seleccionados del índice (0)</button><button id="cmp-btn" class="sec" disabled>Comparar versiones (0/2)</button><button id="integ-btn" class="sec">Comprobar integridad</button><span class="m">Marca las casillas de la tabla; también puedes editar, reindexar o eliminar fila a fila en «Acciones».</span></div>
   <div id="integ"></div>
   <div id="docs"></div>
+  <details id="graph" style="margin-top:12px"><summary><b>Mapa de relaciones entre documentos</b> <span class="m">(vínculos, sustituciones y adjuntos)</span></summary><div id="graph-svg"></div></details>
   <details style="margin-top:12px"><summary><b>Revisiones detectadas</b> <span class="m">(el mismo documento con Rev. A/B, v1/v2…)</span></summary><div id="revs"></div></details>
   <details style="margin-top:8px"><summary><b>🗑 Papelera</b> <span id="trash-n" class="m"></span> <span class="m">(los documentos eliminados se conservan 30 días)</span></summary><div class="row" style="margin:6px 0"><button id="trash-empty" class="sec danger" disabled>Vaciar papelera</button></div><div id="trash"></div></details>
   <div class="row" style="margin-top:14px"><h2 style="margin:0">Registro de errores y duplicados</h2><button id="dup-clear" class="sec">Quitar todos los duplicados del registro</button><button id="dup-disk" class="sec danger">Borrar del disco los archivos duplicados…</button></div>
@@ -128,7 +133,7 @@
 
 <section class="card" data-tab="datos">
   <h2>Registro de cambios (trazabilidad)</h2>
-  <div class="row"><button id="audit-csv" class="sec">Descargar registro (.csv)</button><span class="m">Quién y cuándo importó, editó, eliminó, reindexó o exportó. Indica tu nombre en la cabecera. Se guarda también en la carpeta de datos.</span></div>
+  <div class="row"><button id="audit-csv" class="sec">Descargar registro (.csv)</button><button id="audit-xlsx" class="sec">Descargar registro (.xlsx)</button><span class="m">Quién y cuándo importó, editó, eliminó, reindexó o exportó. Indica tu nombre en la cabecera. Se guarda también en la carpeta de datos.</span></div>
   <div id="audit" style="max-height:220px;overflow:auto;margin-top:6px"></div>
 </section>
 
@@ -145,9 +150,10 @@
   <h2 style="margin-top:16px">Exportar / importar índice (opcional)</h2>
   <div class="row">
     <button id="export" class="sec">Guardar índice completo (.json)</button>
-    <label class="btn sec">Importar índice…<input id="import" type="file" accept=".json,.fbk" hidden></label>
+    <label class="btn sec">Importar índice…<input id="import" type="file" accept=".json,.fbk,.fbp" hidden></label>
     <input id="enc-pass" type="password" placeholder="Contraseña (cifrado)" style="width:170px" autocomplete="new-password">
     <button id="export-enc" class="sec" title="Igual que el .json, pero cifrado con AES-256 y contraseña">🔒 Guardar índice cifrado (.fbk)</button>
+    <button id="fbp-export" class="sec" title="Lleva el proyecto activo a otro equipo o a un compañero: índice, marcas, requisitos y, si quieres, los originales importados">🔒 Exportar proyecto actual (.fbp)</button><label class="m"><input type="checkbox" id="fbp-orig"> incluir originales importados</label>
     <button id="wipe" class="sec danger">Vaciar índice y copia en disco</button>
   </div>
   <h2 style="margin-top:16px">Contraseña de la aplicación (opcional)</h2>

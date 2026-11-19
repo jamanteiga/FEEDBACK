@@ -4,7 +4,8 @@ const KEY = 'extras';
 export const Extras = {
   d: { projects: ['General'], reqs: [], searches: [], audit: [], cfg: {}, nextReq: 1 },
   async load() { const x = await DB.get('meta', KEY); this.d = { projects: ['General'], reqs: [], searches: [], audit: [], cfg: {}, nextReq: 1, ...(x || {}) }; if (!this.d.projects.includes('General')) this.d.projects.unshift('General'); },
-  async save() { await DB.put('meta', JSON.parse(JSON.stringify(this.d)), KEY); },
+  async save() { if (this.readonly) return; await DB.put('meta', JSON.parse(JSON.stringify(this.d)), KEY); },
+  readonly: false,
   async reset() { await DB.del('meta', KEY); this.d = { projects: ['General'], reqs: [], searches: [], audit: [], cfg: {}, nextReq: 1 }; },
   user: () => localStorage.getItem('fb-user') || '(sin nombre)',
   async log(action, target = '', detail = '') {

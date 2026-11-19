@@ -13,6 +13,7 @@ import { parseValueQuery, matchValues, equiv } from './units.js';
 import { CHK, chkLabel, chkDone, famKey, revOf, revGroups, buildMatrix } from './trace.js';
 import { Lock } from './lock.js';
 import { es } from './es.js';
+import { initFlow } from './flow.js';
 import { DOC_EXT, CAD_EXT, LEGACY_EXT, FORMAT_NAME } from './extract.js';
 
 const $ = s => document.querySelector(s);
@@ -38,12 +39,13 @@ const selected = new Set();   // documentos marcados para el informe
 let lastResultIds = [], lastTerms = [];
 
 const tokenize = t => t.split(/[^\p{L}\p{N}]+/u).filter(Boolean);   // separa por cualquier carácter que no sea letra o número (también tabuladores)
-function newMini() {
-  mini = new MiniSearch({
+const miniOptions = () => ({
     fields: ['text'], storeFields: ['docId', 'pageNo'], idField: 'id',
     tokenize: tokenize, processTerm: t => normTerm(t) || null,
     searchOptions: { prefix: t => t.length > 2, combineWith: 'AND', tokenize: tokenize, processTerm: t => normTerm(t) || null },
   });
+function newMini() {
+  mini = new MiniSearch(miniOptions());
 }
 const pid = (d, p) => `${d}:${p}`;
 
@@ -51,9 +53,22 @@ async function loadIndex() {
   await Extras.load(); fillProjects();
   newMini(); docsById.clear();
   for (const d of await DB.all('docs')) { if (d.source === 'carpeta' && d.rootId == null) d.rootId = 1; docsById.set(d.id, d); }
+  // Índice de búsqueda persistente: si nada ha cambiado desde que se guardó, se carga tal cual (sin releer ni descifrar todas las páginas)
+  try {
+    const st = await DB.get('meta', 'idxstate'), sv = st && !st.dirty ? await DB.get('meta', 'searchindex') : null;
+    if (sv && sv.v === 1 && sv.n === await DB.count('pages')) { mini = MiniSearch.loadJSON(sv.json, miniOptions()); DB._dirty = false; return; }
+  } catch { /* se reconstruye */ }
   const pages = await DB.all('pages');
   mini.addAll(pages.map(p => ({ id: pid(p.docId, p.pageNo), docId: p.docId, pageNo: p.pageNo, text: p.text })));
+  saveMiniSoon();
 }
+let miniTimer = 0;
+async function saveMini() {
+  if (DB.readonly || !mini) return; clearTimeout(miniTimer);
+  try { const n = await DB.count('pages'); await DB.put('meta', { v: 1, n, json: JSON.stringify(mini), at: new Date().toISOString() }, 'searchindex'); await DB.put('meta', { dirty: false }, 'idxstate'); DB._dirty = false; } catch { /* no es crítico */ }
+}
+const saveMiniSoon = () => { clearTimeout(miniTimer); miniTimer = setTimeout(saveMini, 4000); };
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && DB._dirty) saveMini(); });
 
 // ---- proyectos, tema, usuario ----
 function fillProjects() {
@@ -295,7 +310,8 @@ async function restorePageText(id, pageNo) {
 // Barra de progreso común (importación y reescaneo)
 const prog = { start(total) { $('#prog').hidden = false; $('#progbar').max = Math.max(1, total); $('#progbar').value = 0; $('#progtxt').textContent = `0 / ${total}`; this.total = total; },
   step(i, name) { $('#progbar').value = i; $('#progtxt').textContent = `${i} / ${this.total} · ${name}`.slice(0, 140); }, end() { $('#prog').hidden = true; } };
-async function importFiles(files, via) {   // files: File o { file, rel: ['sub','carpeta','archivo.pdf'] }
+async function importFiles(files, via) {
+  if (DB.readonly) return addMsg('error', 'Modo solo lectura activo: no se pueden importar archivos.');   // files: File o { file, rel: ['sub','carpeta','archivo.pdf'] }
   if (busy) return addMsg('error', 'Hay un proceso en marcha; espera a que termine.');
   files = files.map(f => f instanceof File ? { file: f, rel: null } : f).filter(x => x.file);
   if (!files.length) return;
@@ -366,7 +382,8 @@ async function pickFolder() {
   try { const h = await window.showDirectoryPicker({ id: 'feedback-docs', mode: 'read' }); await addRoot(h); await scan(); }
   catch (e) { if (e.name !== 'AbortError') addMsg('error', esc(e.message)); }
 }
-async function scan(quiet = false) {   // quiet: pasada automática, sin mensajes si no hay novedades ni peticiones de permiso
+async function scan(quiet = false) {
+  if (DB.readonly) return quiet ? undefined : addMsg('error', 'Modo solo lectura activo: no se puede escanear.');   // quiet: pasada automática, sin mensajes si no hay novedades ni peticiones de permiso
   if (!roots.size) return;
   if (busy) return quiet ? undefined : addMsg('error', 'Hay un proceso en marcha; espera a que termine.');
   const ok = [];
@@ -422,18 +439,14 @@ async function getFileOfDoc(d) {
   return (await (await h.getFileHandle(d.path.at(-1))).getFile());
 }
 async function openOriginal(id, page) {
-  const w = window.open('', '_blank');
   try {
-    const d = docsById.get(id); let f = await getFileOfDoc(d);
-    if (d.kind === 'correo' || d.kind === 'documento' || d.kind === 'plano') {   // el navegador no los muestra: se descarga el original para abrirlo con su programa
-      w?.close(); const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = d.name; a.click(); return;
-    }
-    if (d.kind === 'pdf') { w?.close(); return openViewer({ blob: new Blob([f], { type: 'application/pdf' }), name: d.title || d.name, pageNo: page || 1, terms: lastTerms }); }
-    else if (!f.type) f = new Blob([f], { type: 'image/' + (extOf(d.name) === 'jpg' ? 'jpeg' : extOf(d.name)) });
-    const url = URL.createObjectURL(f) + (d.kind === 'pdf' && page ? `#page=${page}` : '');
-    if (d.kind === 'imagen' && ['tif', 'tiff'].includes(extOf(d.name))) { w?.close(); return addMsg('duplicado', 'El navegador no muestra TIFF: abre la versión procesada.'); }
-    w.location = url;
-  } catch (e) { w?.close(); addMsg('error', esc(e.message)); }
+    const d = docsById.get(id), f = await getFileOfDoc(d), ext = extOf(d.name), nm = d.title || d.name;
+    if (d.kind === 'plano' && ['dwg', 'dxf', 'dgn'].includes(ext)) { const { openCadViewer } = await import('./cadview.js'); return openCadViewer({ blob: f, name: nm, ext, terms: lastTerms }); }
+    if (d.kind === 'pdf') return openViewer({ blob: new Blob([f], { type: 'application/pdf' }), name: nm, pageNo: page || 1, terms: lastTerms });
+    const { openPreview } = await import('./preview.js');
+    const pages = (await DB.byIndex('pages', 'docId', d.id)).sort((a, b) => a.pageNo - b.pageNo);
+    return openPreview({ blob: f, name: nm, file: d.name, ext, kind: d.kind, pages, pageNo: page || 1, terms: lastTerms, fmt: p => d.kind === 'correo' ? mailBody(p.text) : p.text });
+  } catch (e) { addMsg('error', esc(e.message)); }
 }
 async function openProcessed(id, page) {
   const b = await DB.get('pimg', [id, page]); if (!b) return;
@@ -455,12 +468,12 @@ function snippet(text, terms) {
   out += esc(text.slice(pos, end));
   return (start > 0 ? '… ' : '') + out.replace(/\n/g, ' ') + (end < text.length ? ' …' : '');
 }
-const readSpec = () => ({ q: $('#q').value.trim(), kind: $('#kind').value, desde: $('#desde').value, hasta: $('#hasta').value, asunto: $('#asunto').value.trim(), remitente: $('#remitente').value.trim(), etiqueta: $('#etiqueta').value.trim(), fz: $('#fz').checked, sust: $('#sust').checked });
-const writeSpec = sp => { $('#q').value = sp.q || ''; $('#kind').value = sp.kind || ''; $('#desde').value = sp.desde || ''; $('#hasta').value = sp.hasta || ''; $('#asunto').value = sp.asunto || ''; $('#remitente').value = sp.remitente || ''; $('#etiqueta').value = sp.etiqueta || ''; $('#fz').checked = !!sp.fz; $('#sust').checked = !!sp.sust; };
+const readSpec = () => ({ q: $('#q').value.trim(), kind: $('#kind').value, ftype: $('#ftype').value, desde: $('#desde').value, hasta: $('#hasta').value, asunto: $('#asunto').value.trim(), remitente: $('#remitente').value.trim(), etiqueta: $('#etiqueta').value.trim(), fz: $('#fz').checked, sust: $('#sust').checked });
+const writeSpec = sp => { $('#q').value = sp.q || ''; $('#kind').value = sp.kind || ''; $('#ftype').value = sp.ftype || ''; $('#desde').value = sp.desde || ''; $('#hasta').value = sp.hasta || ''; $('#asunto').value = sp.asunto || ''; $('#remitente').value = sp.remitente || ''; $('#etiqueta').value = sp.etiqueta || ''; $('#fz').checked = !!sp.fz; $('#sust').checked = !!sp.sust; };
 const docDay = d => (d.emailDate || d.fileDate).slice(0, 10);
 const docFilter = sp => {
-  const kind = sp.kind || '', desde = sp.desde || '', hasta = sp.hasta || '', asu = normTerm(sp.asunto || ''), rem = normTerm(sp.remitente || ''), tag = normTerm(sp.etiqueta || '');
-  return d => d && d.status === 'ok' && inProj(d) && (!sp.sust || !d.superseded) && (!kind || d.kind === kind) && (!desde || docDay(d) >= desde) && (!hasta || docDay(d) <= hasta)
+  const ft = sp.ftype || '', kind = sp.kind || '', desde = sp.desde || '', hasta = sp.hasta || '', asu = normTerm(sp.asunto || ''), rem = normTerm(sp.remitente || ''), tag = normTerm(sp.etiqueta || '');
+  return d => d && d.status === 'ok' && inProj(d) && (!sp.sust || !d.superseded) && (!kind || d.kind === kind) && (!ft || (ft === 'img' ? d.kind === 'imagen' : extOf(d.name) === ft)) && (!desde || docDay(d) >= desde) && (!hasta || docDay(d) <= hasta)
     && (!asu || normTerm(d.subject || '').includes(asu)) && (!rem || normTerm(d.sender || '').includes(rem)) && (!tag || normTerm((d.tags || '') + ' ' + (d.title || '')).includes(tag));
 };
 const FUZZY = t => t.length > 4 ? 0.2 : false;   // erratas de OCR: hasta ~20 % de letras distintas en palabras de más de 4 letras
@@ -521,12 +534,12 @@ async function showRows(rows, hdr = '', keepSort = false) {
   $('#results').innerHTML = rows.length ? rows.map(({ d, p, snip }) => {
     const where = d.path ? [roots.get(d.rootId)?.name, ...d.path].filter(Boolean).join(' / ') : d.name, low = p.conf != null && p.conf < LOW_CONF, mail = d.kind === 'correo';
     const par = d.parentId ? docsById.get(d.parentId) : null;
-    return `<div class="res"><div class="t"><a href="#" ${mail ? 'data-detail' : 'data-open'}="${d.id}" data-page="${p.pageNo}">${esc(d.title || (mail ? (d.subject || d.name) : d.name))}</a> <span class="m">· ${mail ? 'correo' : (p.label || 'pág. ' + p.pageNo)}${extra.get(d.id) ? ` · +${extra.get(d.id)} coincidencia(s) más` : ''}</span> <span class="tag">${esc(pj(d))}</span></div>
+    return `<div class="res"><div class="t"><a href="#" ${mail ? 'data-detail' : 'data-open'}="${d.id}" data-page="${p.pageNo}">${esc(d.title || (mail ? (d.subject || d.name) : d.name))}</a> <span class="m">· ${mail ? 'correo' : (p.label || 'pág. ' + p.pageNo)}${extra.get(d.id) ? ` · +${extra.get(d.id)} coincidencia(s) más` : ''}</span> <span class="tag">${esc(pj(d))}</span> <span class="racts"><a href="#" data-open="${d.id}" data-page="${mail ? 1 : p.pageNo}" title="Abre el original a pantalla completa con la búsqueda resaltada">abrir original (${esc(d.name.split('.').pop())})</a> · <a href="#" data-detail="${d.id}" data-page="${p.pageNo}">ver / editar</a> · <a href="#" data-similar="${d.id}" data-page="${p.pageNo}" title="Otras páginas con palabras características parecidas">más como este</a> · <a href="#" data-act="exclude" data-id="${d.id}">eliminar</a></span></div>
       ${(mail || par) ? `<div class="m">${mail ? '' : 'Adjunto del correo «' + esc(par?.subject || '') + '» · '}De: ${esc(d.sender || '')}${mail ? ' · Para: ' + esc(d.to || '') : ''} · ${fdate(d.emailDate)}</div>` : ''}
       <div class="s">${snip}</div>
       <div class="m"><span class="tag">${d.kind}</span><span class="tag">${p.method === 'ocr' ? 'OCR ' + Math.round(p.conf) + '%' : p.method === 'correo' ? 'cuerpo del correo' : p.method === 'plano' ? 'texto del plano' : p.method === 'documento' ? 'texto del documento' : 'texto nativo'}</span>
       ${low ? '<span class="tag warn">⚠ OCR de baja confianza: verificar contra el original</span>' : ''}
-      ${esc(where)} · ${mail ? '<a href="#" data-open="' + d.id + '" data-page="1">abrir original (' + esc(d.name.split('.').pop()) + ')</a> · ' : 'archivo de ' + fdate(d.fileDate) + ' · '}<a href="#" data-detail="${d.id}" data-page="${p.pageNo}">ver / editar</a> · <a href="#" data-similar="${d.id}" data-page="${p.pageNo}" title="Otras páginas con palabras características parecidas">más como este</a> · <a href="#" data-act="exclude" data-id="${d.id}">eliminar</a>${p.edited ? ' <span class="tag warn">texto corregido</span>' : ''}${d.tags ? ' ' + d.tags.split(',').map(t => '<span class="tag">' + esc(t.trim()) + '</span>').join('') : ''}
+      ${esc(where)}${mail ? '' : ' · archivo de ' + fdate(d.fileDate)} ${p.edited ? ' <span class="tag warn">texto corregido</span>' : ''}${d.tags ? ' ' + d.tags.split(',').map(t => '<span class="tag">' + esc(t.trim()) + '</span>').join('') : ''}
       ${d.kind === 'imagen' ? ` · <a href="#" data-proc="${d.id}" data-page="${p.pageNo}">versión procesada</a>` : ''}</div></div>`;
   }).join('') : '<div class="empty">Sin resultados.</div>';
   return lastResultIds;
@@ -569,6 +582,7 @@ async function showDoc(id, page, stay = false) {
     ${d.parentId && docsById.get(d.parentId) ? `<div class="m">Adjunto del correo <a href="#" data-detail="${d.parentId}" data-page="1">«${esc(docsById.get(d.parentId).subject)}»</a> · <a href="#" data-open="${d.id}" data-page="1">abrir adjunto</a></div>` : ''}
     <div class="m">${d.kind === 'correo' ? 'Correo' : (pg.label ? pg.label[0].toUpperCase() + pg.label.slice(1) : 'Página ' + pg.pageNo) + ' · parte ' + pg.pageNo + ' de ' + d.pages} · ${pg.method === 'correo' ? 'texto extraído del correo' : pg.method === 'plano' ? 'texto extraído del plano' : pg.method === 'documento' ? 'texto extraído del documento' : pg.method === 'ocr' ? 'OCR (confianza media ' + Math.round(pg.conf) + '%)' : 'texto nativo del PDF'}</div>
     ${chkHtml(d)}
+    ${flow.linksHtml(d)}
     ${d.note ? `<div class="msg ok" style="background:#fffbea;border-color:#ecd98a;color:#1c2430">📝 ${esc(d.note)}</div>` : ''}
     ${pg.edited ? '<div class="m"><span class="tag warn">texto corregido manualmente</span> <a href="#" data-restxt="1">volver al texto extraído originalmente</a></div>' : ''}
     <pre id="pagetext">${esc(d.kind === 'correo' ? mailBody(pg.text) : pg.text) || '(sin texto)'}</pre>
@@ -618,7 +632,7 @@ function renderDash() {
     ${stale ? `<div class="msg duplicado">⚠ ${esc(stale)}</div>` : ''}`;
 }
 async function refresh() {
-  renderDash(); renderAudit(); renderTrash(); renderRevs(); panels.renderReqs(); panels.renderThreads(); panels.renderOcr(); panels.updateBadges();
+  flow?.render(); renderDash(); renderAudit(); renderTrash(); renderRevs(); panels.renderReqs(); panels.renderThreads(); panels.renderOcr(); panels.updateBadges();
   const docs = [...docsById.values()].filter(d => inProj(d) && !d.hidden && d.status !== 'papelera').sort((a, b) => b.id - a.id);
   $('#docs').innerHTML = docs.length ? `<table><tr><th></th><th>#</th><th>Archivo</th><th>Tipo</th><th>Origen</th><th>Págs</th><th>Indexado</th><th title="Lista de comprobación: revisado · contrastado · valores verificados (⏳ = pendiente de respuesta)">Control</th><th>Estado</th><th>Acciones</th></tr>` +
     docs.map(d => `<tr><td>${d.status === 'ok' ? `<input type="checkbox" data-sel="${d.id}" ${selected.has(d.id) ? 'checked' : ''}>` : ''}</td><td>${d.id}</td><td>${esc(d.path ? d.path.join('/') : d.name)}${d.title ? `<div class="m">${esc(d.title)}</div>` : ''}</td><td>${d.kind}</td><td>${esc(d.via)}</td><td>${d.pages}</td><td>${fdate(d.ingestedAt)}</td><td>${d.status === 'ok' ? esc(chkLabel(d)) : ''}${d.superseded ? ' <span class="tag warn">sustituido</span>' : ''}</td>
@@ -646,20 +660,32 @@ async function exportEnc() {
   addMsg('ok', 'Índice cifrado guardado (.fbk). Sin la contraseña no se puede abrir: no hay forma de recuperarla.');
 }
 async function importIndex(file) {
+  if (/\.fbp$/i.test(file.name)) return importProject(file);
   let data;
   if (/\.fbk$/i.test(file.name)) {
     const pw = $('#enc-pass').value; if (!pw) throw new Error('Escribe la contraseña en el campo «Contraseña» antes de importar el .fbk.');
     data = JSON.parse(new TextDecoder().decode(pako.ungzip(await decryptBytes(await file.arrayBuffer(), pw))));
   } else data = JSON.parse(await file.text());
+  return mergeIndex(data, file.name);
+}
+async function mergeIndex(data, fname, blobs = new Map()) {
   if (data.app !== 'feedback-web') throw new Error('Archivo de índice no válido');
-  const map = new Map(); let added = 0, skipped = 0;
+  const map = new Map(); let added = 0, skipped = 0, withOrig = 0;
   for (const d of data.docs) {
     if ((await DB.byIndex('docs', 'sha', d.sha256)).some(x => x.status === 'ok') || d.status !== 'ok') { skipped++; continue; }
-    const old = d.id; delete d.id; if (d.source === 'importado') d.sinOriginal = true;
-    map.set(old, await DB.put('docs', d)); added++;
+    const old = d.id; delete d.id; const bl = blobs.get(old); if (d.source === 'importado' && !bl) d.sinOriginal = true; else delete d.sinOriginal;
+    const nid = await DB.put('docs', d); map.set(old, nid); added++;
+    if (bl) { await DB.put('blobs', new Blob([bl], { type: d.mime || '' }), nid); withOrig++; }
   }
   for (const p of data.pages) if (map.has(p.docId)) await DB.put('pages', { ...p, docId: map.get(p.docId) });
   for (const m of data.marks || []) if (map.has(m.docId)) { delete m.id; await DB.put('marks', { ...m, docId: map.get(m.docId) }); }
+  for (const nid of map.values()) {   // reasigna vínculos, adjuntos y sustituciones a los nuevos identificadores
+    const d = await DB.get('docs', nid); let ch = false;
+    if (d.links) { d.links = d.links.filter(l => map.has(l.to)).map(l => ({ ...l, to: map.get(l.to) })); if (!d.links.length) delete d.links; ch = true; }
+    if (d.parentId != null && map.has(d.parentId)) { d.parentId = map.get(d.parentId); ch = true; } else if (d.parentId != null) { d.parentId = null; ch = true; }
+    if (d.superseded?.by != null) { if (map.has(d.superseded.by)) d.superseded.by = map.get(d.superseded.by); else delete d.superseded; ch = true; }
+    if (ch) await DB.put('docs', d);
+  }
   const x = data.extras;
   if (x) {
     await Extras.load();
@@ -669,9 +695,30 @@ async function importIndex(file) {
     for (const [k, v] of Object.entries(x.cfg || {})) Extras.d.cfg[k] ??= v;
     await Extras.save();
   }
-  await Extras.log('Índice importado', file.name, `${added} añadidos, ${skipped} omitidos`);
+  await Extras.log('Índice importado', fname, `${added} añadidos, ${skipped} omitidos${withOrig ? `, ${withOrig} con original` : ''}`);
   await loadIndex(); await refresh(); await runSearch();
-  addMsg('ok', `Índice importado: ${added} documentos añadidos, ${skipped} omitidos. Los archivos de carpeta se abren al elegir la misma carpeta; los importados por arrastrar/pegar no incluyen el original.`);
+  addMsg('ok', `Importado: ${added} documentos añadidos, ${skipped} omitidos${withOrig ? ` (${withOrig} con su original)` : ''}. Los archivos de carpeta se abren al elegir la misma carpeta; los importados sin original solo conservan el texto.`);
+}
+// ---- proyecto completo cifrado (.fbp): índice + marcas + requisitos + (opcional) originales importados ----
+async function exportProject() {
+  const pw = $('#enc-pass').value; if (pw.length < 6) return addMsg('error', 'Escribe una contraseña de al menos 6 caracteres en el campo «Contraseña (cifrado)».');
+  const proj = curProject || 'General', ds = [...docsById.values()].filter(d => inProj(d) && d.status === 'ok'); if (!ds.length) return addMsg('error', 'No hay documentos en este proyecto.');
+  const ids = new Set(ds.map(d => d.id)), withOrig = $('#fbp-orig').checked, files = {}; let n = 0;
+  const data = { app: 'feedback-web', version: 3, kind: 'proyecto', project: proj, exportedAt: new Date().toISOString(), docs: ds, pages: (await DB.all('pages')).filter(p => ids.has(p.docId)), marks: (await DB.all('marks')).filter(m => ids.has(m.docId)),
+    extras: { projects: [proj], reqs: Extras.d.reqs.filter(r => ids.has(r.docId)), cfg: { [proj]: Extras.d.cfg[proj] || {} }, searches: [] } };
+  files['index.json'] = fflate.strToU8(JSON.stringify(data));
+  if (withOrig) for (const d of ds) if (d.source !== 'carpeta') { const b = await DB.get('blobs', d.id); if (b) { files['originales/' + d.id] = new Uint8Array(await b.arrayBuffer()); n++; } }
+  const bytes = await encryptBytes(fflate.zipSync(files, { level: 1 }), pw);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+  a.download = `feedback-proyecto-${proj.replace(/[^\w-]+/g, '_')}-${new Date().toISOString().slice(0, 10)}.fbp`; a.click();
+  await Extras.log('Proyecto exportado', proj, `.fbp cifrado · ${ds.length} documento(s)${withOrig ? `, ${n} original(es)` : ''}`);
+  addMsg('ok', `Proyecto «${esc(proj)}» guardado (.fbp cifrado, ${ds.length} documentos${withOrig ? `, ${n} originales importados` : ''}). Los archivos de tus carpetas no se incluyen: se vuelven a enlazar con «Añadir carpeta…». Sin la contraseña no se puede abrir.`);
+}
+async function importProject(file) {
+  const pw = $('#enc-pass').value; if (!pw) throw new Error('Escribe la contraseña en el campo «Contraseña (cifrado)» antes de importar el .fbp.');
+  const z = fflate.unzipSync(await decryptBytes(await file.arrayBuffer(), pw)); if (!z['index.json']) throw new Error('Archivo de proyecto no válido.');
+  const blobs = new Map(); for (const [k, v] of Object.entries(z)) if (k.startsWith('originales/')) blobs.set(+k.slice(11), v);
+  return mergeIndex(JSON.parse(fflate.strFromU8(z['index.json'])), file.name, blobs);
 }
 
 // ---- eventos ----
@@ -682,6 +729,7 @@ document.addEventListener('click', e => {
   if (t.dataset.act) { const id = +t.dataset.id; const A = t.dataset.act;
     if (A === 'untrash') return untrash(id);
     if (A === 'purge') { const d = docsById.get(id); if (!d || !confirm(`¿Eliminar definitivamente «${d.title || d.name}»? No se podrá recuperar.`)) return; return purgeNow(id).then(async () => { await Extras.log('Eliminado definitivamente', d.name); await afterChange(); }); }
+    if (A === 'relocate') return relocate(id).catch(e => addMsg('error', esc(e.message)));
     return A === 'exclude' ? excludeDoc(id) : A === 'reindex' ? reindexDoc(id) : restoreDoc(id); }
   if (t.dataset.restxt) return restorePageText(+$('#detail').dataset.doc, +$('#detail').dataset.page);
   if (t.dataset.markdel) { const m = (+t.dataset.markdel); return DB.get('marks', m).then(async x => { await DB.del('marks', m); await renderMarks(x.docId); }); }
@@ -747,6 +795,18 @@ document.addEventListener('click', e => {
   }
 });
 
+// ---- relocalizar un original movido o renombrado ----
+async function relocate(id) {
+  if (DB.readonly) return addMsg('error', 'Modo solo lectura activo: no se pueden guardar cambios.');
+  const d = docsById.get(id), r = roots.get(d?.rootId); if (!r?.handle) return addMsg('error', 'La carpeta de este documento no está enlazada en este equipo.');
+  if (!(await ensurePerm(r.handle))) return addMsg('error', 'Sin permiso sobre la carpeta (pulsa de nuevo y acepta).');
+  setStatus(`Buscando «${d.name}» en la carpeta…`, 'info'); let found = null, seen = 0;
+  const walk = async (h, path) => { for await (const [n, e] of h.entries()) { if (found) return; if (e.kind === 'directory') await walk(e, [...path, n]); else { const f = await e.getFile(); if (f.size !== d.size) continue; if (++seen % 20 === 0) setStatus(`Comparando archivos (${seen})…`, 'info'); if (await sha256(await f.arrayBuffer()) === d.sha256) { found = [...path, n]; return; } } } };
+  try { await walk(r.handle, []); } finally { setStatus(''); }
+  if (!found) return addMsg('error', `No se encontró en la carpeta ningún archivo con el mismo contenido que «${esc(d.name)}».`);
+  const old = d.path.join('/'); d.path = found; d.name = found.at(-1); d.key = `c:${r.id}:${found.join('/')}`; await DB.put('docs', d); await Extras.log('Original relocalizado', d.name, `${old} → ${found.join('/')}`);
+  await afterChange(); addMsg('ok', `Encontrado: ${esc(found.join('/'))}. Ruta actualizada.`);
+}
 // ---- comprobador de integridad ----
 async function checkIntegrity() {
   const ds = [...docsById.values()].filter(d => d.status === 'ok' && inProj(d) && !d.parentId), res = [], perm = new Map();
@@ -768,7 +828,7 @@ async function checkIntegrity() {
   setStatus('');
   const bad = res.filter(r => r.st !== 'ok');
   $('#integ').innerHTML = `<div class="msg ${bad.length ? 'duplicado' : 'ok'}">${res.length} documento(s) comprobados: ${res.length - bad.length} correctos · ${bad.length} con incidencias.</div>` +
-    (bad.length ? `<table><tr><th>Documento</th><th>Estado</th><th>Detalle</th><th>Acciones</th></tr>${bad.map(({ d, st, note }) => `<tr><td>${esc(d.path ? d.path.join('/') : d.name)}</td><td><span class="tag warn">${st}</span></td><td>${note}</td><td>${st === 'modificado' ? `<a href="#" data-act="reindex" data-id="${d.id}">reindexar</a> · ` : ''}<a href="#" data-act="exclude" data-id="${d.id}">eliminar</a></td></tr>`).join('')}</table>` : '');
+    (bad.length ? `<table><tr><th>Documento</th><th>Estado</th><th>Detalle</th><th>Acciones</th></tr>${bad.map(({ d, st, note }) => `<tr><td>${esc(d.path ? d.path.join('/') : d.name)}</td><td><span class="tag warn">${st}</span></td><td>${note}</td><td>${st === 'modificado' ? `<a href="#" data-act="reindex" data-id="${d.id}">reindexar</a> · ` : ''}${st === 'no encontrado' ? `<a href="#" data-act="relocate" data-id="${d.id}" title="Busca en la carpeta un archivo con el mismo contenido (SHA-256) aunque se haya movido o renombrado">buscar en la carpeta</a> · ` : ''}<a href="#" data-act="exclude" data-id="${d.id}">eliminar</a></td></tr>`).join('')}</table>` : '');
   await Extras.log('Comprobación de integridad', '', `${bad.length} incidencia(s) de ${res.length}`);
 }
 $('#integ-btn').onclick = () => checkIntegrity().catch(e => { setStatus(''); addMsg('error', esc(e.message)); });
@@ -809,14 +869,20 @@ function renderAudit() {
   const a = Extras.d.audit.slice(-200).reverse();
   $('#audit').innerHTML = a.length ? `<table><tr><th>Fecha</th><th>Usuario/equipo</th><th>Acción</th><th>Objeto</th><th>Detalle</th></tr>${a.map(x => `<tr><td>${fdate(x.at)}</td><td>${esc(x.user)}</td><td>${esc(x.action)}</td><td>${esc(x.target)}</td><td>${esc(x.detail)}</td></tr>`).join('')}</table>` : '<div class="empty">Sin cambios registrados.</div>';
 }
+$('#audit-xlsx').onclick = () => { const rows = [['Fecha', 'Usuario/equipo', 'Acción', 'Objeto', 'Detalle'], ...Extras.d.audit.map(x => [x.at.replace('T', ' ').slice(0, 19), x.user, x.action, x.target || '', x.detail || ''])]; download(packXlsx([{ name: 'Registro de cambios', widths: [20, 24, 30, 40, 70], rows }]), `feedback-registro-${new Date().toISOString().slice(0, 10)}.xlsx`); };
 $('#audit-csv').onclick = () => download(new Blob([Extras.auditCsv()], { type: 'text/csv;charset=utf-8' }), `feedback-registro-${new Date().toISOString().slice(0, 10)}.csv`);
 
 // ---- plantilla del informe (por proyecto) ----
 const cfgKey = () => curProject || 'General';
 const cfg = () => (Extras.d.cfg[cfgKey()] ??= { co: '', no: '', rev: 'A', au: '', logo: '' });
-function loadCfg() { const c = cfg(); $('#rc-co').value = c.co; $('#rc-no').value = c.no; $('#rc-rev').value = c.rev; $('#rc-au').value = c.au || Extras.user().replace('(sin nombre)', ''); $('#rc-wm').value = c.wm || ''; $('#rc-cl').value = c.cl || ''; $('#rc-logoprev').innerHTML = c.logo ? `<img src="${c.logo}" style="height:32px;vertical-align:middle">` : ''; }
+function loadCfg() { fillTpl(); const c = cfg(); $('#rc-co').value = c.co; $('#rc-no').value = c.no; $('#rc-rev').value = c.rev; $('#rc-au').value = c.au || Extras.user().replace('(sin nombre)', ''); $('#rc-wm').value = c.wm || ''; $('#rc-cl').value = c.cl || ''; $('#rc-logoprev').innerHTML = c.logo ? `<img src="${c.logo}" style="height:32px;vertical-align:middle">` : ''; }
 for (const [id, k] of [['rc-co', 'co'], ['rc-no', 'no'], ['rc-rev', 'rev'], ['rc-au', 'au'], ['rc-wm', 'wm'], ['rc-cl', 'cl']]) $('#' + id).onchange = async e => { cfg()[k] = e.target.value.trim(); await Extras.save(); refreshReport(); };
 $('#rc-revup').onclick = async () => { const c = cfg(), r = c.rev || 'A'; c.rev = /^\d+$/.test(r) ? String(+r + 1) : r.length === 1 && /[A-Y]/i.test(r) ? String.fromCharCode(r.charCodeAt(0) + 1) : r + '+'; await Extras.save(); loadCfg(); await Extras.log('Nueva revisión de informe', cfgKey(), c.rev); refreshReport(); };
+const TPL_F = ['co', 'no', 'rev', 'au', 'wm', 'cl', 'logo'];
+function fillTpl() { const t = Extras.d.tpls || []; $('#tpl').innerHTML = '<option value="">(elegir plantilla…)</option>' + t.map((x, i) => `<option value="${i}">${esc(x.name)}</option>`).join(''); }
+$('#tpl').onchange = async e => { const t = (Extras.d.tpls || [])[+e.target.value]; if (!t) return; const c = cfg(); for (const f of TPL_F) c[f] = t.cfg[f] ?? ''; await Extras.save(); await Extras.log('Plantilla de informe aplicada', t.name); loadCfg(); refreshReport(); e.target.value = ''; };
+$('#tpl-save').onclick = async () => { const n = (prompt('Nombre de la plantilla (cliente o proyecto):', curProject || '') || '').trim(); if (!n) return; const c = cfg(), snap = {}; for (const f of TPL_F) snap[f] = c[f] ?? ''; (Extras.d.tpls ||= []); const i = Extras.d.tpls.findIndex(x => x.name.toLowerCase() === n.toLowerCase()); if (i >= 0) Extras.d.tpls[i] = { name: n, cfg: snap }; else Extras.d.tpls.push({ name: n, cfg: snap }); await Extras.save(); await Extras.log('Plantilla de informe guardada', n); fillTpl(); addMsg('ok', `Plantilla «${esc(n)}» guardada.`); };
+$('#tpl-del').onclick = async () => { const t = Extras.d.tpls || []; if (!t.length) return addMsg('error', 'No hay plantillas guardadas.'); const n = prompt('Nombre exacto de la plantilla a borrar:\n' + t.map(x => x.name).join('\n')); if (!n) return; const i = t.findIndex(x => x.name.toLowerCase() === n.trim().toLowerCase()); if (i < 0) return addMsg('error', 'No existe una plantilla con ese nombre.'); t.splice(i, 1); await Extras.save(); fillTpl(); };
 $('#rc-logoclear').onclick = async () => { cfg().logo = ''; await Extras.save(); loadCfg(); refreshReport(); };
 $('#rc-logo').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
@@ -867,8 +933,8 @@ try { const a = JSON.parse(localStorage.getItem('fb-auto') || 'null'); if (a) { 
 setAuto();
 $('#cancel').onclick = () => { cancel = true; };
 $('#sf').onsubmit = e => { e.preventDefault(); runSearch(); };
-$('#sort').onchange = $('#grp').onchange = $('#fz').onchange = $('#sust').onchange = () => runSearch();
-$('#bulk-del').onclick = bulkDelete; $('#export').onclick = exportIndex; $('#export-enc').onclick = () => exportEnc().catch(e => addMsg('error', esc(e.message))); $('#export2').onclick = exportIndex;
+$('#ftype').onchange = $('#sort').onchange = $('#grp').onchange = $('#fz').onchange = $('#sust').onchange = () => runSearch();
+$('#bulk-del').onclick = bulkDelete; $('#export').onclick = exportIndex; $('#fbp-export').onclick = () => exportProject().catch(e => addMsg('error', esc(e.message))); $('#export-enc').onclick = () => exportEnc().catch(e => addMsg('error', esc(e.message))); $('#export2').onclick = exportIndex;
 $('#import').onchange = async e => { try { await importIndex(e.target.files[0]); } catch (err) { addMsg('error', esc(err.message)); } e.target.value = ''; };
 $('#wipe').onclick = async () => {
   if (!confirm('Se borrará el índice, las marcas y los archivos importados de este navegador y TAMBIÉN la copia en la carpeta de datos (si la hay). No se toca ninguna carpeta de documentos ni ningún original. ¿Continuar?')) return;
@@ -913,7 +979,9 @@ $('#dd-restore').onclick = async () => {
 };
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') Store.flush().catch(() => {}); });
 
+let flow;
 const panels = initPanels({ setPageText, openViewer, getFile: id => getFileOfDoc(docsById.get(id)), afterChange: () => afterChange(), $, esc, DB, docsById, inProj, pj, fdate, addMsg, runSearch, refreshReport: () => refreshReport(), download, getProject: () => curProject, readSpec, writeSpec, renderDash: () => renderDash() });
+flow = initFlow({ $, esc, docsById, inProj, selected, addMsg, fdate, showDoc: (...x) => showDoc(...x), afterChange: () => afterChange(), refresh: () => refresh() });
 // ---- cabecera: proyecto, usuario, tema ----
 $('#proj').onchange = async e => { curProject = e.target.value; localStorage.setItem('fb-proj', curProject); selected.clear(); await refresh(); await runSearch(); await refreshReport(); loadCfg(); };
 $('#projnew').onclick = async () => {

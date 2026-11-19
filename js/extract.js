@@ -1,13 +1,13 @@
 // Extracción de TEXTO directa (sin convertir a PDF) de adjuntos y documentos: Word, Excel, PowerPoint,
 // texto/CSV/HTML/RTF y ZIP. Devuelve páginas con una etiqueta de ubicación (hoja, diapositiva, pág. aprox., bloque).
-import { docPages, xlsPages } from './legacy.js';
+import { docPages, xlsPages, pptPages } from './legacy.js';
 import { cadPages } from './cad.js';
-export const OFFICE_EXT = ['docx', 'xlsx', 'pptx', 'doc', 'xls'];
+export const OFFICE_EXT = ['docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt'];
 export const CAD_EXT = ['dwg', 'dxf', 'dgn'];
 export const TEXT_EXT = ['txt', 'csv', 'tsv', 'log', 'md', 'html', 'htm', 'rtf'];
 export const ZIP_EXT = ['zip'];
 export const DOC_EXT = [...OFFICE_EXT, ...TEXT_EXT, ...ZIP_EXT, ...CAD_EXT];
-export const LEGACY_EXT = ['ppt'];   // formato binario antiguo aún no legible: guardar como .pptx o PDF
+export const LEGACY_EXT = [];   // formato binario antiguo aún no legible: guardar como .pptx o PDF
 
 // XML sin DOM (también funciona en un Web Worker): entidades y recorrido por expresiones regulares
 const decXml = s => s.indexOf('&') < 0 ? s : s.replace(/&(#x[0-9a-f]+|#\d+|lt|gt|amp|quot|apos);/gi, (m, e) => e[0] === '#' ? String.fromCodePoint(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : +e.slice(1)) : ({ lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" })[e.toLowerCase()]);
@@ -103,6 +103,7 @@ export async function extractDocument(ext, buf) {
   const u8 = new Uint8Array(buf);
   if (ext === 'doc') return docPages(u8);
   if (ext === 'xls') return xlsPages(u8);
+  if (ext === 'ppt') return pptPages(u8);
   if (CAD_EXT.includes(ext)) return cadPages(ext, u8);
   if (ext === 'docx') return docx(unzip(u8));
   if (ext === 'xlsx') return xlsx(unzip(u8));
@@ -112,7 +113,7 @@ export async function extractDocument(ext, buf) {
   else if (ext === 'rtf') t = rtf(t);
   return chunk(t);
 }
-export const FORMAT_NAME = { docx: 'Word', doc: 'Word (.doc antiguo)', xlsx: 'Excel', xls: 'Excel (.xls antiguo)', pptx: 'PowerPoint', dwg: 'plano DWG', dxf: 'plano DXF', dgn: 'plano DGN', txt: 'texto', csv: 'CSV', tsv: 'TSV', log: 'texto', md: 'texto', html: 'HTML', htm: 'HTML', rtf: 'RTF (aproximado)', zip: 'ZIP' };
+export const FORMAT_NAME = { docx: 'Word', doc: 'Word (.doc antiguo)', xlsx: 'Excel', xls: 'Excel (.xls antiguo)', ppt: 'PowerPoint (.ppt antiguo)', pptx: 'PowerPoint', dwg: 'plano DWG', dxf: 'plano DXF', dgn: 'plano DGN', txt: 'texto', csv: 'CSV', tsv: 'TSV', log: 'texto', md: 'texto', html: 'HTML', htm: 'HTML', rtf: 'RTF (aproximado)', zip: 'ZIP' };
 
 // Imágenes incrustadas en Word/Excel/PowerPoint (capturas, fotos de planos…): se devuelven como «adjuntos» para que se les pase OCR.
 export function embeddedImages(ext, buf) {

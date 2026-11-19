@@ -69,3 +69,41 @@ export function xlsPages(u8) {
   }
   return pages.length ? pages : [{ pageNo: 1, label: '', text: '' }];
 }
+
+
+// ---------------- PowerPoint 97–2003 (.ppt) ----------------
+// Registros de «PowerPoint Document»: el texto de cada diapositiva está en TextCharsAtom (UTF-16) y TextBytesAtom (1252) dentro de SlideListWithText;
+// el texto de formas/tablas está en los contenedores de diapositiva. Se agrupa por diapositiva; las notas del orador van en páginas aparte.
+export function pptPages(u8) {
+  let cfb; try { cfb = XLSX.CFB.read(u8, { type: 'array' }); } catch { throw new Error('No es una presentación de PowerPoint válida (.ppt).'); }
+  const ps = stream(cfb, 'PowerPoint Document'); if (!ps) throw new Error('El archivo .ppt no contiene una presentación de PowerPoint.');
+  if (stream(cfb, 'EncryptedSummary') ) throw new Error('Presentación protegida con contraseña: no se puede leer.');
+  const dv = new DataView(ps.buffer, ps.byteOffset, ps.byteLength);
+  const slides = [], notes = []; let cur = null, mode = '';
+  const fix = t => t.replace(/\r\n?|\x0b|\x0d/g, '\n').replace(/[\x00-\x08\x0e-\x1f]/g, '').trim();
+  const take = (type, s, e) => { const t = fix(type === 0x0FA0 ? utf16(ps.subarray(s, e)) : latin(ps.subarray(s, e))); if (t) cur?.push(t); };
+  const walk = (s, e, ctx) => {
+    let p = s;
+    while (p + 8 <= e) {
+      const vi = dv.getUint16(p, true), type = dv.getUint16(p + 2, true), len = dv.getUint32(p + 4, true), b = p + 8, end = Math.min(b + len, e), ver = vi & 0xF, inst = vi >> 4;
+      if (type === 0x03F3 && ctx === 'list') { cur = []; (mode === 'notes' ? notes : slides).push(cur); }
+      else if (type === 0x0FA0 || type === 0x0FA8) { if (ctx === 'list' || ctx === 'slide' || ctx === 'notes') take(type, b, end); }
+      else if (ver === 0xF) {
+        if (type === 0x0FF0) { mode = inst === 2 ? 'notes' : inst === 0 ? 'slides' : 'master'; if (mode !== 'master') walk(b, end, 'list'); }
+        else if (type === 0x03EE || type === 0x03F0) { /* Slide / Notes: texto de formas */ const k = ctx === 'root' ? (type === 0x03EE ? 'slide' : 'notes') : ctx; const save = cur; const arr = type === 0x03EE ? (extra.slides.push([]), extra.slides.at(-1)) : (extra.notes.push([]), extra.notes.at(-1)); cur = arr; walk(b, end, k); cur = save; }
+        else if (type === 0x03F8 || type === 0x03FA) { /* MainMaster / Master */ }
+        else walk(b, end, ctx);
+      }
+      p = b + len;
+    }
+  };
+  const extra = { slides: [], notes: [] };
+  walk(0, ps.length, 'root');
+  const pages = [], uniq = (a, extraLines) => { const seen = new Set(a.map(x => x.replace(/\s+/g, ' '))); return [...a, ...extraLines.filter(x => !seen.has(x.replace(/\s+/g, ' ')))]; };
+  const n = Math.max(slides.length, extra.slides.length);
+  for (let i = 0; i < n; i++) { const t = uniq(slides[i] || [], extra.slides[i] || []).join('\n'); if (t.trim()) pages.push({ label: `diapositiva ${i + 1}`, text: t }); }
+  const nn = Math.max(notes.length, extra.notes.length);
+  for (let i = 0; i < nn; i++) { const t = uniq(notes[i] || [], extra.notes[i] || []).join('\n'); if (t.trim()) pages.push({ label: `notas del orador (n.º ${i + 1}; el orden puede no coincidir con las diapositivas)`, text: t }); }
+  const r = pages.map((p, i) => ({ pageNo: i + 1, label: p.label, text: p.text }));
+  return r.length ? r : [{ pageNo: 1, label: '', text: '' }];
+}

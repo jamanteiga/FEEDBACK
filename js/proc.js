@@ -38,6 +38,89 @@ export async function ocr(canvas, onStatus) {
   return { text: (data.text || '').trim(), conf: data.confidence ?? 0 };
 }
 
+
+// ---- OCR para planos densos y fotos de pantalla ----
+// Texto apelotonado, tamaños mezclados, líneas cruzadas y texto vertical: normaliza la iluminación,
+// elimina color y líneas largas, amplía, binariza y lee en horizontal y girado 90°.
+const gauss = (src, w, h) => {
+  const k = [1, 4, 6, 4, 1], t = new Float32Array(w * h), o = new Uint8ClampedArray(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let a = 0; for (let i = -2; i <= 2; i++) a += k[i + 2] * src[y * w + Math.min(w - 1, Math.max(0, x + i))]; t[y * w + x] = a / 16; }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let a = 0; for (let i = -2; i <= 2; i++) a += k[i + 2] * t[Math.min(h - 1, Math.max(0, y + i)) * w + x]; o[y * w + x] = a / 16; }
+  return o;
+};
+function maxMinFilter(a, w, h, r, isMax) {
+  const t = new Uint8ClampedArray(w * h), o = new Uint8ClampedArray(w * h), better = isMax ? (x, y) => x > y : (x, y) => x < y;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let m = a[y * w + x]; for (let i = Math.max(0, x - r); i <= Math.min(w - 1, x + r); i++) if (better(a[y * w + i], m)) m = a[y * w + i]; t[y * w + x] = m; }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let m = t[y * w + x]; for (let i = Math.max(0, y - r); i <= Math.min(h - 1, y + r); i++) if (better(t[i * w + x], m)) m = t[i * w + x]; o[y * w + x] = m; }
+  return o;
+}
+export function denseBinarize(src, opts = {}) {
+  const { maxSide = 6000, scale = 3, lineLen = 150, mode = 'color' } = opts, thr = opts.thr ?? (mode === 'max' ? 130 : 110);
+  const W0 = src.width, H0 = src.height, f = Math.min(scale, maxSide / Math.max(W0, H0));
+  // 1) gris + color a blanco a resolución original
+  const ctx0 = src.getContext('2d', { willReadFrequently: true }), d = ctx0.getImageData(0, 0, W0, H0).data;
+  const g = new Uint8ClampedArray(W0 * H0), col = new Uint8Array(W0 * H0);
+  for (let i = 0, j = 0; i < g.length; i++, j += 4) {
+    const r = d[j], gg = d[j + 1], b = d[j + 2], mx = Math.max(r, gg, b), mn = Math.min(r, gg, b);
+    g[i] = mode === 'max' ? mx : (r * 299 + gg * 587 + b * 114) / 1000;
+    if (mode !== 'max' && mx > 60 && (mx - mn) * 255 / mx > 70) col[i] = 1;
+  }
+  // 2) fondo = cierre morfológico a 1/4 de resolución (quita el texto, deja iluminación/moiré)
+  const sw = Math.max(1, Math.round(W0 / 4)), sh = Math.max(1, Math.round(H0 / 4)), small = new Uint8ClampedArray(sw * sh);
+  for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) small[y * sw + x] = g[Math.min(H0 - 1, y * 4) * W0 + Math.min(W0 - 1, x * 4)];
+  const bg = gauss(maxMinFilter(maxMinFilter(small, sw, sh, 6, true), sw, sh, 6, false), sw, sh);
+  const norm = new Uint8ClampedArray(W0 * H0);
+  for (let y = 0; y < H0; y++) for (let x = 0; x < W0; x++) {
+    const i = y * W0 + x, b = bg[Math.min(sh - 1, y >> 2) * sw + Math.min(sw - 1, x >> 2)] || 1;
+    norm[i] = col[i] ? 255 : Math.min(255, g[i] * 255 / b);
+  }
+  // 3) ampliar, suavizar y binarizar
+  const W = Math.round(W0 * f), H = Math.round(H0 * f);
+  const tmp = mkCanvas(W0, H0), tx = tmp.getContext('2d'), im = tx.createImageData(W0, H0);
+  for (let i = 0, j = 0; i < norm.length; i++, j += 4) { im.data[j] = im.data[j + 1] = im.data[j + 2] = norm[i]; im.data[j + 3] = 255; }
+  tx.putImageData(im, 0, 0);
+  const big = mkCanvas(W, H), bx = big.getContext('2d', { willReadFrequently: true }); bx.imageSmoothingQuality = 'high'; bx.drawImage(tmp, 0, 0, W, H);
+  const bd = bx.getImageData(0, 0, W, H), px = new Uint8ClampedArray(W * H);
+  for (let i = 0, j = 0; i < px.length; i++, j += 4) px[i] = bd.data[j];
+  const sm = gauss(px, W, H), ink = new Uint8Array(W * H);
+  for (let i = 0; i < ink.length; i++) ink[i] = sm[i] < thr ? 1 : 0;
+  // 4) quitar líneas largas (rectas horizontales/verticales) del dibujo
+  const lines = new Uint8Array(W * H), L = Math.round(lineLen * f / 3);
+  for (let y = 0; y < H; y++) { let x = 0; while (x < W) { if (!ink[y * W + x]) { x++; continue; } let e = x; while (e < W && ink[y * W + e]) e++; if (e - x >= L) lines.fill(1, y * W + x, y * W + e); x = e; } }
+  for (let x = 0; x < W; x++) { let y = 0; while (y < H) { if (!ink[y * W + x]) { y++; continue; } let e = y; while (e < H && ink[e * W + x]) e++; if (e - y >= L) for (let k = y; k < e; k++) lines[k * W + x] = 1; y = e; } }
+  const out = bx.createImageData(W, H), o = out.data;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; let ln = lines[i];
+    if (!ln) for (let dy = -1; dy <= 1 && !ln; dy++) for (let dx = -1; dx <= 1; dx++) { const yy = y + dy, xx = x + dx; if (yy >= 0 && yy < H && xx >= 0 && xx < W && lines[yy * W + xx]) { ln = 1; break; } }
+    const v = ink[i] && !ln ? 0 : 255, j = i * 4; o[j] = o[j + 1] = o[j + 2] = v; o[j + 3] = 255;
+  }
+  bx.putImageData(out, 0, 0);
+  return big;
+}
+const rot90 = (c, cw) => { const r = mkCanvas(c.height, c.width), x = r.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, r.width, r.height); x.translate(cw ? r.width : 0, cw ? 0 : r.height); x.rotate((cw ? 1 : -1) * Math.PI / 2); x.drawImage(c, 0, 0); return r; };
+const tsvWords = tsv => (tsv || '').split('\n').map(l => l.split('\t')).filter(a => a.length >= 12 && a[0] === '5' && (a[11] || '').trim()).map(a => ({ conf: +a[10], text: a[11].trim() }));
+export async function ocrDense(canvas, onStatus) {
+  const w = await getWorker(onStatus);
+  onStatus?.('OCR denso: preparando imagen…');
+  const bin = denseBinarize(canvas), binMax = denseBinarize(canvas, { mode: 'max' }); // 2.ª: texto sobre sombreados de color
+  await w.setParameters({ tessedit_pageseg_mode: '12', preserve_interword_spaces: '1' });
+  onStatus?.('OCR denso: texto horizontal…');
+  const h = await w.recognize(bin, {}, { text: true, tsv: true });
+  const seen = new Set((h.data.text || '').toLowerCase().split(/\s+/).filter(Boolean));
+  const extra = [];
+  const keep = x => x.conf >= 65 && x.text.length >= 3 && /[A-Za-z0-9]/.test(x.text) && (/\d/.test(x.text) || x.text.length >= 4) && !seen.has(x.text.toLowerCase());
+  const take = ws => ws.filter(keep).forEach(x => { seen.add(x.text.toLowerCase()); extra.push(x.text); });
+  onStatus?.('OCR denso: texto sobre sombreados…');
+  take(tsvWords((await w.recognize(binMax, {}, { text: true, tsv: true })).data.tsv));
+  for (const [cw, label] of [[true, 'vertical ↑'], [false, 'vertical ↓']]) {
+    onStatus?.(`OCR denso: texto ${label}…`);
+    take(tsvWords((await w.recognize(rot90(bin, cw), {}, { text: true, tsv: true })).data.tsv));
+  }
+  await w.setParameters({ tessedit_pageseg_mode: '3' });
+  const text = (h.data.text || '').trim() + (extra.length ? '\n\n[lecturas adicionales: sombreados y texto vertical]\n' + extra.join(' ') : '');
+  return { text, conf: h.data.confidence ?? 0, bin };
+}
+
 // ---- corrección de imagen ----
 function toGray(canvas) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -146,8 +229,14 @@ export async function processImage(file, buf, onProgress, onStatus) {
   for (let i = 0; i < cvs.length; i++) {
     onProgress?.(`imagen ${i + 1}/${cvs.length}: corrigiendo y aplicando OCR…`);
     const { canvas, steps } = enhance(cvs[i]);
-    const { text, conf } = await ocr(canvas, onStatus);
-    out.push({ pageNo: i + 1, method: 'ocr', conf, text, steps, processed: await canvasBlob(canvas) });
+    let { text, conf } = await ocr(canvas, onStatus), processed = canvas;
+    if (conf < 80 || text.length < 400) {
+      try {
+        const d = await ocrDense(cvs[i], onStatus);
+        if (d.text.length > text.length * 1.15 || d.conf > conf) { text = d.text; conf = Math.max(conf, d.conf); processed = d.bin; steps.push({ step: 'ocr_denso', detail: 'iluminación normalizada, color y líneas largas eliminados, x3, lectura horizontal y vertical' }); }
+      } catch (e) { steps.push({ step: 'ocr_denso', detail: 'no se pudo aplicar: ' + (e.message || e) }); }
+    }
+    out.push({ pageNo: i + 1, method: 'ocr', conf, text, steps, processed: await canvasBlob(processed) });
   }
   return out;
 }
@@ -176,7 +265,8 @@ export async function processPdf(buf, onProgress, onStatus) {
       const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
       await page.render({ canvas: c, canvasContext: ctx, viewport: vp }).promise;
       const { canvas, steps } = enhance(c);
-      const r = await ocr(canvas, onStatus);
+      let r = await ocr(canvas, onStatus);
+      if (r.conf < 70) { try { const d = await ocrDense(c, onStatus); if (d.text.length > r.text.length * 1.15) { r = { text: d.text, conf: Math.max(r.conf, d.conf) }; steps.push({ step: 'ocr_denso', detail: 'segunda lectura para plano denso (más texto reconocido)' }); } } catch {} }
       steps.unshift({ step: 'render_pdf', detail: `página rasterizada a ${Math.round(scale * 72)} dpi para OCR` });
       out.push({ pageNo: n, method: 'ocr', conf: r.conf, text: r.text, steps, processed: null });
       page.cleanup();

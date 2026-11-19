@@ -1,5 +1,6 @@
 // Visor de PDF integrado: muestra la página exacta con los términos buscados resaltados (solo lectura; el original no se modifica).
 import { openPdfDoc, pdfjsLib } from './proc.js';
+import { decorate, leaveFs } from './vwin.js';
 const norm = s => Array.from(s).map(c => { const d = c.normalize('NFD')[0].toLowerCase(); return d.length === 1 ? d : c.toLowerCase()[0]; }).join('');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -7,15 +8,15 @@ export async function openViewer({ blob, name, pageNo = 1, terms = [] }) {
   document.getElementById('viewer')?.remove();
   const wrap = document.createElement('div'); wrap.id = 'viewer';
   wrap.innerHTML = `<div class="vwin"><div class="vbar"><b class="vname">${esc(name)}</b><button class="sec" data-v="prev">◀</button><span class="vpg"></span><button class="sec" data-v="next">▶</button>
-    <button class="sec" data-v="out">−</button><button class="sec" data-v="in">＋</button><span class="m vhits"></span><span style="flex:1"></span><button class="sec" data-v="tab">Abrir en pestaña</button><button data-v="close">✕ Cerrar</button></div>
+    <button class="sec" data-v="out">−</button><button class="sec" data-v="in">＋</button><span class="m vhits"></span><span style="flex:1"></span><button class="sec" data-v="tab">Abrir en pestaña</button></div>
     <div class="vbody"><div class="vpage"><canvas></canvas><div class="vhl"></div></div></div></div>`;
   document.body.appendChild(wrap);
   const cv = wrap.querySelector('canvas'), hl = wrap.querySelector('.vhl'), body = wrap.querySelector('.vbody');
   const ts = [...new Set(terms.map(t => norm(t.trim())).filter(t => t.length >= 2))];
   let pdf, n = pageNo, zoom = 1.3, busy = false, again = false, task;
-  const close = () => { document.removeEventListener('keydown', onKey); task?.cancel?.(); pdf?.destroy?.(); wrap.remove(); };
+  const close = () => { document.removeEventListener('keydown', onKey); task?.cancel?.(); pdf?.destroy?.(); leaveFs(); wrap.remove(); };
   const onKey = e => { if (e.key === 'Escape') close(); else if (e.key === 'ArrowRight') go(1); else if (e.key === 'ArrowLeft') go(-1); };
-  document.addEventListener('keydown', onKey);
+  document.addEventListener('keydown', onKey); decorate(wrap, close);
   const go = d => { n = Math.min(pdf.numPages, Math.max(1, n + d)); render(); };
   async function render() {
     if (busy) { again = true; return; } busy = true;

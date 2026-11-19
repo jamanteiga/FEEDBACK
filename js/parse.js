@@ -13,7 +13,7 @@ function worker() {
   } catch { broken = true; w = null; }
   return w;
 }
-const needX = ext => ['doc', 'xls', 'dgn'].includes(ext) && typeof XLSX === 'undefined';
+const needX = ext => ['doc', 'xls', 'ppt', 'dgn'].includes(ext) && typeof XLSX === 'undefined';
 const loadX = () => new Promise((res, rej) => { const s = document.createElement('script'); s.src = new URL('../vendor/xlsx.full.min.js', import.meta.url).href; s.onload = res; s.onerror = () => rej(new Error('No se pudo cargar SheetJS')); document.head.appendChild(s); });
 const local = async (op, ext, buf) => { if (needX(ext)) await loadX(); return op === 'mail' ? parseEmail(ext, buf) : parseDocument(ext, buf); };
 function run(op, ext, buf) {

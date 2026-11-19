@@ -79,12 +79,15 @@ export function dxfPages(txt) {
 let lwPromise = null;
 const BASE = new URL('../', import.meta.url);
 const lwLoad = async (base = BASE) => { if (!lwPromise) lwPromise = import(new URL('vendor/libredwg/dist/libredwg-web.js', base).href).then(async m => ({ m, lw: await m.LibreDwg.create() })); return lwPromise; };
-export async function dwgPages(u8, kind = 'DWG') {
+export async function dwgDb(u8, kind = 'DWG') {
   const { m, lw } = await lwLoad();
   const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
   const ptr = lw.dwg_read_data(ab, kind === 'DXF' ? m.Dwg_File_Type.DXF : m.Dwg_File_Type.DWG);
   if (!ptr) throw new Error('No se pudo leer el DWG (versión no admitida o archivo dañado).');
-  let db; try { db = lw.convert(ptr); } finally { try { lw.dwg_free(ptr); } catch { /* ya liberado */ } }
+  try { return lw.convert(ptr); } finally { try { lw.dwg_free(ptr); } catch { /* ya liberado */ } }
+}
+export async function dwgPages(u8, kind = 'DWG') {
+  const db = await dwgDb(u8, kind);
   const model = [], paper = [], attrs = [], blockLines = [], blockNames = [], counts = {};
   const txt = (e, ctx, out) => {
     counts[e.type] = (counts[e.type] || 0) + 1;
