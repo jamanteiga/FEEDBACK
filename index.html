@@ -17,6 +17,7 @@
 <main>
 
 <section class="card" id="dash" data-tab="inicio"></section>
+<section class="card" id="newscard" data-tab="inicio"></section>
 <section class="card" id="inbox" data-tab="inicio"></section>
 
 <section class="card" data-tab="inicio">
@@ -120,6 +121,9 @@
   <iframe id="reportframe" style="width:100%;height:560px;border:1px solid var(--line);border-radius:6px;margin-top:10px;background:#fff"></iframe>
 </section>
 
+<section class="card" id="idxcard" data-tab="documentos"><h2 style="margin-top:0">Índice maestro de documentos</h2>
+<div class="row"><input id="idx-q" placeholder="Filtrar (nº, título, estado…)" style="width:240px"><label class="m"><input type="checkbox" id="idx-vig"> solo vigentes (sin sustituidos)</label><button id="idx-go">Calcular / actualizar</button><button id="idx-xlsx" class="sec">Descargar (Excel)</button><button id="idx-re" class="sec" title="Vuelve a leer portada/cajetín de todos (conserva tus correcciones)">Releer cajetines</button></div>
+<div class="m">Nº de documento, título, revisión, fecha y estado se <b>proponen</b> leyendo la portada o el cajetín (texto u OCR). Pulsa una celda para corregirla; tu corrección se conserva.</div><div id="idx-out"></div></section>
 <section class="card" id="dupcard" data-tab="documentos"><h2 style="margin-top:0">Duplicados, casi duplicados y versiones</h2>
 <div class="row"><label class="m">Parecido mínimo <select id="dup-min"><option value="0.95">95 %</option><option value="0.85" selected>85 %</option><option value="0.7">70 %</option></select></label><button id="dup-go">Buscar</button><span class="m">Compara el texto indexado de todos los documentos. «comparar» abre la comparación de versiones.</span></div><div id="dup-out"></div></section>
 <section class="card" id="covcard" data-tab="informes"><h2 style="margin-top:0">Informe de cobertura de requisitos</h2>
@@ -129,6 +133,8 @@
 <div class="row"><input id="eq-q" placeholder="Filtrar etiqueta…" style="width:220px"><select id="eq-kind"><option value="">Todos los tipos</option><option value="equipo">Equipos / tags</option><option value="local">Locales</option><option value="norma">Normas</option></select><button id="eq-go">Actualizar</button></div>
 <div class="row" style="margin-top:6px"><button id="eq-xlsx" class="sec">Exportar lista de equipos (Excel)</button><button id="eq-inc" class="sec">Buscar inconsistencias entre documentos</button></div>
 <div id="eq-incout"></div><div id="eq-list"></div><div id="eq-ficha"></div></section>
+<section class="card" id="mapcard" data-tab="equipos"><h2 style="margin-top:0">Mapa de relaciones</h2>
+<div class="row"><input id="mp-q" placeholder="Etiqueta (p. ej. 100VENT5501) o documento; vacío = visión general" style="width:380px"><button id="mp-go">Dibujar</button></div><div id="mp-out"></div></section>
 <section class="card" data-tab="documentos">
   <h2>Documentos y registro</h2>
   <div class="row" style="margin-bottom:4px"><span class="m">Edición en bloque de los marcados:</span><input id="be-tags" placeholder="Añadir etiquetas (coma)" style="width:170px"><select id="be-proj"></select><select id="be-chk"></select><input id="be-note" placeholder="Añadir a la nota" style="width:150px"><button id="be-go" class="sec">Aplicar</button></div>

@@ -8,6 +8,9 @@ import { Extras, encryptBytes, decryptBytes } from './extras.js';
 import { packXlsx } from './export.js';
 import * as Eq from './equipos.js';
 import * as Dup from './duplicados.js';
+import * as Cj from './cajetin.js';
+import * as Mp from './mapa.js';
+import { docTables } from './tablas.js';
 import { openOcrReview } from './ocrreview.js';
 import { initPanels, synVariants as synV0 } from './panels.js';
 import { prepare as semPrepare, semVariants, explain as semExplain } from './semantic.js';
@@ -604,6 +607,7 @@ async function showDoc(id, page, stay = false) {
     ${flow.linksHtml(d)}
     ${d.note ? `<div class="msg ok" style="background:#fffbea;border-color:#ecd98a;color:#1c2430">📝 ${esc(d.note)}</div>` : ''}
     ${evForm(d, pg)}
+    ${d.kind === 'pdf' ? `<div class="row" style="margin-top:6px"><span class="m"><b>Tablas:</b></span><button class="sec" data-tblx="${d.id}:${pg.pageNo}">Extraer tablas de esta página (Excel)</button><button class="sec" data-tblx="${d.id}:0">…de todo el documento</button></div>` : ''}
     ${pg.method === 'ocr' && (d.kind === 'imagen' || d.kind === 'pdf') ? '<div><button class="sec" data-ocrrev="1">Revisar OCR (recorte + texto)</button></div>' : ''}
     ${pg.edited ? '<div class="m"><span class="tag warn">texto corregido manualmente</span> <a href="#" data-restxt="1">volver al texto extraído originalmente</a></div>' : ''}
     <pre id="pagetext">${esc(d.kind === 'correo' ? mailBody(pg.text) : pg.text) || '(sin texto)'}</pre>
@@ -640,6 +644,7 @@ async function addMark(docId, pageNo) {
 }
 
 function renderDash() {
+  try { renderNews(); } catch (e) { console.warn(e); }
   const ds = [...docsById.values()].filter(inProj), ok = ds.filter(d => d.status === 'ok'), by = k => ok.filter(d => d.kind === k).length;
   const st = Extras.d.reqs.filter(r => !curProject || (docsById.get(r.docId) && inProj(docsById.get(r.docId))));
   const stale = !Store.dir ? 'No hay carpeta de datos: la copia solo existe en este navegador.' : (Store.dirty.size ? 'Cambios pendientes de guardar en disco…' : (!Store.lastSave ? 'Copia en disco aún no guardada en esta sesión.' : (Date.now() - Store.lastSave > 864e5 ? 'La última copia en disco tiene más de 24 h.' : '')));
@@ -744,8 +749,11 @@ async function importProject(file) {
 
 // ---- eventos ----
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-open],[data-detail],[data-proc],[data-rmroot],[data-markdel],[data-marknote],[data-act],[data-restxt],[data-similar],[data-eq],[data-ocrrev],[data-inc],[data-evdel],[data-cmp]'); if (!t) return;
+  const t = e.target.closest('[data-open],[data-detail],[data-proc],[data-rmroot],[data-markdel],[data-marknote],[data-act],[data-restxt],[data-similar],[data-eq],[data-ocrrev],[data-inc],[data-evdel],[data-cmp],[data-tblx],[data-medit],[data-goto]'); if (!t) return;
   e.preventDefault();
+  if (t.dataset.tblx) return tablesToXlsx(t.dataset.tblx);
+  if (t.dataset.medit) return editIdxMeta(t.dataset.medit);
+  if (t.dataset.goto) return goTab(t.dataset.goto);
   if (t.dataset.cmp) { selected.clear(); t.dataset.cmp.split(',').forEach(i => selected.add(+i)); cmpSwap = false; return compareSelected(); }
   if (t.dataset.inc != null) return addIncAsConflict(+t.dataset.inc);
   if (t.dataset.evdel) return delEvidence(t.dataset.evdel);
@@ -1265,3 +1273,65 @@ $('#cov-xlsx').onclick = () => {
     { name: 'Detalle', widths: [6, 80, 30, 8, 14, 14, 60], rows: [['#', 'Requisito', 'Documento', 'Pág.', 'Estado', 'Cumplimiento', 'Evidencias'], ...reqs.map(r => { const d = docsById.get(r.docId); return [String(r.id), r.text, d ? (d.title || d.name) : '', String(r.pageNo), r.status, complianceOf(r), (r.ev || []).map(x => `${VERD[x.v][0]} · ${docsById.get(x.docId)?.name || ''} p.${x.pageNo}${x.note ? ' · ' + x.note : ''}`).join('; ')]; })] },
   ]), `feedback-cobertura-requisitos-${new Date().toISOString().slice(0, 10)}.xlsx`); Extras.log('Informe de cobertura exportado', '.xlsx', `${tot.total} requisitos`);
 };
+
+// ---- índice maestro (cajetín/portada) ----
+const metaEff = d => { const m = { ...(d.meta || {}) }; for (const [k, v] of Object.entries(d.metaMan || {})) if (v) m[k] = v; return m; };
+async function ensureMeta(d, force) { if (d.meta && !force) return false; d.meta = Cj.metaOf(d, await DB.byIndex('pages', 'docId', d.id)); await DB.put('docs', d); return true; }
+function idxRows() {
+  const q = normTerm($('#idx-q').value), vig = $('#idx-vig').checked, reqs = panels.reqsInProj();
+  return [...docsById.values()].filter(d => d.status === 'ok' && inProj(d) && !d.parentId && (!vig || !d.superseded)).map(d => {
+    const m = metaEff(d), rs = reqs.filter(r => r.docId === d.id), par = d.parentId ? docsById.get(d.parentId) : null;
+    return { d, m, num: m.num || '', numFile: !m.num && m.numFile ? m.numFile : '', reqs: rs.length, abiertos: rs.filter(r => r.status === 'pendiente' || r.status === 'conflicto').length, evid: reqs.reduce((n, r) => n + (r.ev || []).filter(e => e.docId === d.id).length, 0), origen: par ? 'correo: ' + (par.subject || '') : d.path || (d.source === 'carpeta' ? 'carpeta' : 'subido a mano') };
+  }).filter(r => !q || normTerm([r.num, r.numFile, r.m.titulo, r.m.estado, r.m.rev, r.d.name].join(' ')).includes(q)).sort((a, b) => (a.num || a.numFile || '~' + a.d.name).localeCompare(b.num || b.numFile || '~' + b.d.name));
+}
+async function idxRender(calc, force) {
+  if (calc) { const ds = [...docsById.values()].filter(d => d.status === 'ok' && inProj(d) && !d.parentId); let n = 0; for (const d of ds) { if (await ensureMeta(d, force)) n++; if (n && n % 25 === 0) setStatus(`Leyendo cajetines (${n})…`, 'info'); } setStatus('', ''); if (n) await afterChange(); }
+  const rows = idxRows(), cell = (r, k, v, extra = '') => `<td data-medit="${r.d.id}:${k}" title="Pulsa para corregir" style="cursor:pointer${r.d.metaMan?.[k] ? ';background:#fff8d6' : ''}">${v ? esc(v) : '<span class="m">—</span>'}${extra}</td>`;
+  $('#idx-out').innerHTML = rows.length ? `<div class="m">${rows.length} documento(s). Fondo amarillo = corregido por ti.</div><table><tr><th>Nº documento</th><th>Título</th><th>Rev.</th><th>Fecha</th><th>Estado</th><th>Tipo</th><th>Requisitos (abiertos/total)</th><th>Evid.</th><th>Vigente</th><th>Fichero</th></tr>${rows.map(r => `<tr>${cell(r, 'num', r.num, r.numFile ? `<span class="m" title="Tomado del nombre del fichero"><i>${esc(r.numFile)}</i></span>` : '')}${cell(r, 'titulo', r.m.titulo)}${cell(r, 'rev', r.m.rev)}${cell(r, 'fecha', r.m.fecha)}${cell(r, 'estado', r.m.estado)}<td>${esc(r.d.kind)}</td><td>${r.abiertos}/${r.reqs}</td><td>${r.evid}</td><td>${r.d.superseded ? 'sustituido' : 'sí'}</td><td><a href="#" data-open="${r.d.id}" data-page="1">${esc(r.d.name)}</a></td></tr>`).join('')}</table>` : '<div class="empty">Pulsa «Calcular / actualizar» para leer las portadas.</div>';
+}
+$('#idx-go').onclick = () => idxRender(true, false);
+$('#idx-re').onclick = () => idxRender(true, true);
+$('#idx-q').oninput = $('#idx-vig').onchange = () => idxRender(false);
+async function editIdxMeta(key) {
+  const [id, f] = [+key.split(':')[0], key.split(':')[1]], d = docsById.get(id); if (!d) return; if (DB.readonly) return addMsg('error', 'Modo solo lectura activo.');
+  const lab = { num: 'Nº de documento', titulo: 'Título', rev: 'Revisión', fecha: 'Fecha (AAAA-MM-DD)', estado: 'Estado' }[f], cur = metaEff(d)[f] || '';
+  const v = prompt(`${lab} de «${d.title || d.name}» (vacío = volver al valor leído automáticamente):`, cur); if (v === null) return;
+  d.metaMan = { ...(d.metaMan || {}) }; if (v.trim()) d.metaMan[f] = v.trim(); else delete d.metaMan[f];
+  await DB.put('docs', d); await Extras.log('Metadato corregido', d.name, `${f}: ${v.trim() || '(auto)'}`); await afterChange(); idxRender(false);
+}
+$('#idx-xlsx').onclick = async () => {
+  await idxRender(true, false); const rows = idxRows(); if (!rows.length) return addMsg('error', 'No hay documentos que exportar.');
+  download(packXlsx([{ name: 'Índice maestro', widths: [26, 60, 8, 12, 20, 12, 12, 10, 40, 10, 10, 10, 12, 44, 16], rows: [['Nº documento', 'Título', 'Rev.', 'Fecha', 'Estado', 'Tipo', 'Formato', 'Partes', 'Origen', 'Requisitos', 'Abiertos', 'Evidencias', 'Vigente', 'Fichero', 'Proyecto'],
+    ...rows.map(r => [r.num || (r.numFile ? r.numFile + ' (del nombre)' : ''), r.m.titulo || '', r.m.rev || '', r.m.fecha || '', r.m.estado || '', r.d.kind, extOf(r.d.name), String(r.d.pages || ''), r.origen, String(r.reqs), String(r.abiertos), String(r.evid), r.d.superseded ? 'sustituido' : 'sí', r.d.name, r.d.project || 'General'])] }]), `feedback-indice-maestro-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  Extras.log('Índice maestro exportado', '.xlsx', `${rows.length} documentos`);
+};
+// ---- tablas de PDF a Excel ----
+async function tablesToXlsx(key) {
+  const [id, pn] = key.split(':').map(Number), d = docsById.get(id); if (!d) return;
+  try {
+    const f = await getFileOfDoc(d); setStatus('Buscando tablas…', 'info');
+    const pdf = await openPdfDoc(await f.arrayBuffer()).promise, tb = await docTables(pdf, pn || 0); setStatus('', '');
+    if (!tb.length) return addMsg('error', 'No se han detectado tablas con texto' + (pn ? ' en esta página.' : ' en este documento.') + ' Si el PDF es un escaneado, el texto viene de OCR y no se pueden reconstruir las columnas.');
+    const nm = d.title || d.name;
+    download(packXlsx([{ name: 'Origen', widths: [30, 80], rows: [['Documento', nm], ['Fichero', d.name], ['Tablas', String(tb.length)], ['Aviso', 'Tablas reconstruidas por posición del texto; revisa columnas y celdas combinadas contra el original.'], ...tb.map((t, i) => [`Hoja p${t.pageNo}-t${i + 1}`, `página ${t.pageNo}, ${t.rows.length} filas × ${t.rows[0].length} columnas`])] },
+      ...tb.slice(0, 60).map((t, i) => ({ name: `p${t.pageNo}-t${i + 1}`, widths: t.rows[0].map(() => 22), rows: t.rows }))]), `feedback-tablas-${d.name.replace(/\.[^.]+$/, '').slice(0, 40)}${pn ? '-p' + pn : ''}.xlsx`);
+    await Extras.log('Tablas extraídas', d.name, `${tb.length} tabla(s)`); addMsg('ok', `${tb.length} tabla(s) extraída(s) a Excel. Revísalas contra el original.`);
+  } catch (e) { setStatus('', ''); addMsg('error', 'No se pudieron extraer las tablas: ' + (e.message || e)); }
+}
+// ---- mapa de relaciones ----
+$('#mp-go').onclick = async () => {
+  if (!eqMap.size) await eqRefresh(); const q = $('#mp-q').value, g = Mp.buildGraph({ docsById, eqMap, reqs: panels.reqsInProj(), q });
+  Mp.renderGraph($('#mp-out'), g); if (q.trim() && !g.nodesFound) $('#mp-out').insertAdjacentHTML('afterbegin', `<div class="msg error">No encuentro «${esc(q)}» como etiqueta de equipo ni como documento; se muestra la visión general.</div>`);
+};
+$('#mp-q').onkeydown = e => { if (e.key === 'Enter') $('#mp-go').click(); };
+// ---- agenda de requisitos y cambios registrados (Inicio). La marca de «última visita» la gestiona flow.js ----
+function renderNews() {
+  const el = $('#newscard'); if (!el) return; const lv = +(localStorage.getItem('fb-lastvisit') || 0), today = new Date().toISOString().slice(0, 10), in14 = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10);
+  const au = lv ? (Extras.d.audit || []).filter(a => Date.parse(a.at) > lv) : [], reqs = panels?.reqsInProj ? panels.reqsInProj() : [], open = r => r.status === 'pendiente' || r.status === 'conflicto';
+  const venc = reqs.filter(r => open(r) && r.due && r.due < today), prox = reqs.filter(r => open(r) && r.due && r.due >= today && r.due <= in14), conf = reqs.filter(r => r.status === 'conflicto' && !venc.includes(r) && !prox.includes(r));
+  const rl = (l, t) => l.length ? `<div><b>${t} (${l.length})</b><ul style="margin:2px 0 6px 18px">${l.slice(0, 8).map(r => `<li><a href="#" data-detail="${r.docId}" data-page="${r.pageNo}">#${r.id}</a> ${esc(r.text.slice(0, 80))} <span class="m">${r.due ? 'vence ' + r.due : ''}${r.owner ? ' · ' + esc(r.owner) : ''}</span></li>`).join('')}</ul></div>` : '';
+  const acts = {}; au.forEach(a => acts[a.action] = (acts[a.action] || 0) + 1);
+  el.innerHTML = `<h2 style="margin-top:0">Agenda de requisitos y cambios</h2>
+  ${rl(venc, '⚠ Requisitos vencidos')}${rl(prox, 'Vencen en 14 días')}${rl(conf, 'En conflicto')}${!venc.length && !prox.length && !conf.length ? '<div class="m">Sin requisitos vencidos, próximos a vencer ni en conflicto.</div>' : ''}
+  <div style="margin-top:6px"><b>Cambios registrados desde tu última visita (${au.length})</b> <span class="m">${Object.entries(acts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, n]) => esc(k) + ' ×' + n).join(' · ') || (lv ? 'ninguno' : 'primera visita')}</span> · <a href="#" data-goto="requisitos">Ir a Requisitos</a></div>`;
+}

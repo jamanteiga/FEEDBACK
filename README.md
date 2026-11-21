@@ -183,3 +183,10 @@ Doble clic: sincroniza con GitHub, descomprime el `feedback-web-v*.zip` más rec
 
 ## v0.25
 - **Menú de pestañas en vertical**: barra lateral izquierda (Inicio, Buscar, Requisitos, Informes, Equipos, Documentos, Datos y copias). En pantallas estrechas (móvil) la barra se hace más delgada. Los atajos Alt+1…6 siguen igual.
+
+## v0.26
+- **Cajetín / portada → metadatos** (`js/cajetin.js`): propone nº de documento, título, revisión, fecha y estado leyendo la portada (2 primeras partes) o el cajetín de planos (texto u OCR). Son propuestas por reglas; se corrigen a mano.
+- **Índice maestro** (Documentos → «Índice maestro de documentos»): tabla con nº, título, rev., fecha, estado, tipo, requisitos abiertos/total, evidencias, vigencia y fichero. Pulsa una celda para corregirla (queda en amarillo y se conserva al releer). Excel descargable.
+- **Tablas de PDF a Excel** (detalle de un PDF → «Extraer tablas de esta página / de todo el documento»): detecta tablas por la posición del texto (PDF.js) y genera una hoja por tabla. Solo PDF con texto; en escaneados no se reconstruyen columnas.
+- **Mapa de relaciones** (Equipos → «Mapa de relaciones»): documentos ↔ etiquetas de equipo ↔ requisitos, en SVG clicable. Vacío = visión general; escribe una etiqueta o un documento para centrarlo.
+- **Agenda de requisitos y cambios** (Inicio): requisitos vencidos, que vencen en 14 días o en conflicto, y cambios registrados desde la última visita.
