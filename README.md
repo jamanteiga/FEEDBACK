@@ -180,3 +180,6 @@ Doble clic: sincroniza con GitHub, descomprime el `feedback-web-v*.zip` más rec
 ## v0.24
 - **Clic en el título de un resultado** abre siempre el original (correo .eml/.msg incluido, PDF, plano, Office…) con el texto buscado resaltado. «ver / editar» sigue abriendo el detalle con el texto extraído.
 - **.docm, .xlsm y .pptm** (Office con macros) se indexan como sus equivalentes sin macros. Las macros (`vbaProject.bin`) nunca se ejecutan ni se leen. Nuevo filtro «Tipo de fichero» para .docm y .pptm.
+
+## v0.25
+- **Menú de pestañas en vertical**: barra lateral izquierda (Inicio, Buscar, Requisitos, Informes, Equipos, Documentos, Datos y copias). En pantallas estrechas (móvil) la barra se hace más delgada. Los atajos Alt+1…6 siguen igual.
