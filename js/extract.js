@@ -3,7 +3,8 @@
 import { docPages, xlsPages, pptPages } from './legacy.js';
 import { cadPages } from './cad.js';
 import { carveImages } from './carve.js';
-export const OFFICE_EXT = ['docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt'];
+export const OFFICE_EXT = ['docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt', 'docm', 'xlsm', 'pptm'];
+const MACRO = { docm: 'docx', xlsm: 'xlsx', pptm: 'pptx' };   // mismo formato interno; las macros (vbaProject.bin) NUNCA se ejecutan ni se leen
 export const CAD_EXT = ['dwg', 'dxf', 'dgn'];
 export const TEXT_EXT = ['txt', 'csv', 'tsv', 'log', 'md', 'html', 'htm', 'rtf'];
 export const ZIP_EXT = ['zip'];
@@ -101,6 +102,7 @@ export function zipEntries(buf) {
 
 // Devuelve [{pageNo,label,text}] para Word/Excel/PowerPoint/texto. (ZIP se gestiona aparte con zipEntries.)
 export async function extractDocument(ext, buf) {
+  ext = MACRO[ext] || ext;
   const u8 = new Uint8Array(buf);
   if (ext === 'doc') return docPages(u8);
   if (ext === 'xls') return xlsPages(u8);
@@ -114,10 +116,11 @@ export async function extractDocument(ext, buf) {
   else if (ext === 'rtf') t = rtf(t);
   return chunk(t);
 }
-export const FORMAT_NAME = { docx: 'Word', doc: 'Word (.doc antiguo)', xlsx: 'Excel', xls: 'Excel (.xls antiguo)', ppt: 'PowerPoint (.ppt antiguo)', pptx: 'PowerPoint', dwg: 'plano DWG', dxf: 'plano DXF', dgn: 'plano DGN', txt: 'texto', csv: 'CSV', tsv: 'TSV', log: 'texto', md: 'texto', html: 'HTML', htm: 'HTML', rtf: 'RTF (aproximado)', zip: 'ZIP' };
+export const FORMAT_NAME = { docm: 'Word con macros (solo texto; las macros no se ejecutan)', xlsm: 'Excel con macros (solo datos; las macros no se ejecutan)', pptm: 'PowerPoint con macros (solo texto)', docx: 'Word', doc: 'Word (.doc antiguo)', xlsx: 'Excel', xls: 'Excel (.xls antiguo)', ppt: 'PowerPoint (.ppt antiguo)', pptx: 'PowerPoint', dwg: 'plano DWG', dxf: 'plano DXF', dgn: 'plano DGN', txt: 'texto', csv: 'CSV', tsv: 'TSV', log: 'texto', md: 'texto', html: 'HTML', htm: 'HTML', rtf: 'RTF (aproximado)', zip: 'ZIP' };
 
 // Imágenes incrustadas en Word/Excel/PowerPoint (capturas, fotos de planos…): se devuelven como «adjuntos» para que se les pase OCR.
 export function embeddedImages(ext, buf) {
+  ext = MACRO[ext] || ext;
   const mk = (list, tag) => list.slice(0, 40).map((f, i) => ({ name: `imagen-incrustada-${String(i + 1).padStart(2, '0')}${tag}-${f.name}`, mime: '', bytes: f.bytes, inline: f.bytes.byteLength < 8192 }));
   try {
     if (['docx', 'xlsx', 'pptx'].includes(ext)) {

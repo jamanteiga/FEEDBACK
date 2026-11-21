@@ -176,3 +176,7 @@ Al indexar un plano se dibuja su geometría a una imagen y se lee con OCR (horiz
 
 ## subir_feedback.bat (v2, sin preguntas)
 Doble clic: sincroniza con GitHub, descomprime el `feedback-web-v*.zip` más reciente (carpeta o Descargas) y lo borra, comprueba que no se cuela ningún documento y sube a `main` sin forzar. `/auto` = sin pausas (log en `%TEMP%\feedback_sync.log`). `/instalar` crea la tarea «FEEDBACK sync» (cada 10 min) para que el PC reciba solo lo subido desde la nube; `/quitar` la borra. `/forzar` descarta cambios locales y se queda con GitHub.
+
+## v0.24
+- **Clic en el título de un resultado** abre siempre el original (correo .eml/.msg incluido, PDF, plano, Office…) con el texto buscado resaltado. «ver / editar» sigue abriendo el detalle con el texto extraído.
+- **.docm, .xlsm y .pptm** (Office con macros) se indexan como sus equivalentes sin macros. Las macros (`vbaProject.bin`) nunca se ejecutan ni se leen. Nuevo filtro «Tipo de fichero» para .docm y .pptm.
