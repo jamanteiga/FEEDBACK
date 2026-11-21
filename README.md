@@ -173,6 +173,3 @@ Al indexar un plano se dibuja su geometría a una imagen y se lee con OCR (horiz
 ## v0.23
 - **Duplicados, casi duplicados y versiones** (Documentos → «Buscar»): compara el texto indexado por fragmentos de 5 palabras y lista parejas con parecido ≥70/85/95 % (el % es sobre el documento más corto, así que una versión con añadidos puede salir al 100 %). También lista familias de versiones por nombre (REV, V, fecha) con enlaces «comparar» que abren la comparación de versiones ya existente. No elimina nada.
 - **Informe de cobertura de requisitos** (Informes → «Calcular» / «Descargar (Excel)»): totales y % de cumple / dudoso / no cumple / sin evidencia, por concepto y por documento de origen, con hoja de detalle. Opción de incluir descartados.
-
-## subir_feedback.bat (v2, sin preguntas)
-Doble clic: sincroniza con GitHub, descomprime el `feedback-web-v*.zip` más reciente (carpeta o Descargas) y lo borra, comprueba que no se cuela ningún documento y sube a `main` sin forzar. `/auto` = sin pausas (log en `%TEMP%\feedback_sync.log`). `/instalar` crea la tarea «FEEDBACK sync» (cada 10 min) para que el PC reciba solo lo subido desde la nube; `/quitar` la borra. `/forzar` descarta cambios locales y se queda con GitHub.

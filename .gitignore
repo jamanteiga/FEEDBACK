@@ -28,10 +28,3 @@ versions/
 # Iconos de la app (no son documentos)
 !icon-192.png
 !icon-512.png
-
-# Dibujos CAD y exportaciones de proyecto (pueden ser sensibles)
-*.dwg
-*.dgn
-*.dxf
-*.dwf
-*.fbp
